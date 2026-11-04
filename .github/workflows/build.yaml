@@ -1,13 +1,7 @@
 name: Build & Release
 
 on:
-  push:
-    branches: [ "**" ]
-    tags:
-      - "v*.*.*"
-  pull_request:
-    branches: [ "main" ]
-  
+  # NoBars fork: releases come from nobars.yml; this upstream workflow only runs by hand
   workflow_dispatch:
 
 jobs:

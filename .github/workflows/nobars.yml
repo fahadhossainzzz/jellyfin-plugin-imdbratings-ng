@@ -1,0 +1,63 @@
+name: NoBars build & publish
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Version
+        run: |
+          VERSION="6.1.1.${{ github.run_number }}"
+          echo "VERSION=${VERSION}" >> $GITHUB_ENV
+          sed -i "s|^version: .*|version: '${VERSION}'|" ./build.yaml
+          sed -i "s|^framework: .*|framework: \"net10.0\"|" ./build.yaml
+          sed -i 's~^changelog: .*~changelog: "NoBars fork: IMDb vote counts kept and served at /Plugins/ImdbRatings/Votes"~' ./build.yaml
+          cat ./build.yaml
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Build plugin
+        uses: oddstr13/jellyfin-plugin-repository-manager@9497a0a499416cc572ed2e07a391d9f943a37b4d # v1.1.1
+        with:
+          dotnet-target: "net10.0"
+          path: "."
+          output: "./artifacts"
+
+      - name: Publish release
+        uses: ncipollo/release-action@v1.20.0
+        with:
+          tag: "v${{ env.VERSION }}"
+          commit: ${{ github.sha }}
+          name: "NoBars ${{ env.VERSION }}"
+          body: "IMDb Ratings NG with vote counts (NoBars fork)."
+          artifacts: "./artifacts/*.zip"
+          allowUpdates: true
+
+      - name: Update plugin repository manifest
+        run: |
+          ZIP=$(ls ./artifacts/*.zip | head -1)
+          ZIP_NAME=$(basename "$ZIP")
+          URL="https://github.com/${{ github.repository }}/releases/download/v${VERSION}/${ZIP_NAME}"
+          python3 -m pip install --quiet jprm
+          git fetch origin repository
+          git worktree add ../repo origin/repository
+          cp "$ZIP" ../repo/
+          cd ../repo
+          jprm repo add ./manifest.json "${ZIP_NAME}" -u "https://raw.githubusercontent.com/${{ github.repository }}/repository" -U "${URL}"
+          rm -f ./*.zip
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "manifest: ${VERSION}"
+          git push origin HEAD:repository
