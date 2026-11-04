@@ -88,13 +88,13 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
                 var request = new VoteRequest
                 {
                     Key = item.Id.ToString("N", CultureInfo.InvariantCulture),
-                    ImdbId = NumericImdbId(item.GetProviderId(MetadataProvider.Imdb)),
+                    ImdbId = NumericImdbId(item.GetProviderId(MediaBrowser.Model.Entities.MetadataProvider.Imdb)),
                 };
 
                 if (request.ImdbId == null && item is Episode episode)
                 {
                     var series = episode.Series ?? (episode.SeriesId != Guid.Empty ? _libraryManager.GetItemById(episode.SeriesId) as Series : null);
-                    request.SeriesImdbId = NumericImdbId(series?.GetProviderId(MetadataProvider.Imdb));
+                    request.SeriesImdbId = NumericImdbId(series?.GetProviderId(MediaBrowser.Model.Entities.MetadataProvider.Imdb));
                     request.Season = episode.ParentIndexNumber;
                     request.Episode = episode.IndexNumber;
                 }

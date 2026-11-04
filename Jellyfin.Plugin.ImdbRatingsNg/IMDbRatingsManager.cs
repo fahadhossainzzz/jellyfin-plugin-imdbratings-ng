@@ -554,7 +554,7 @@ namespace Jellyfin.Plugin.ImdbRatingsNg
 
                 idParam.Value = imdbId.Value;
                 using var reader = await ratingCmd.ExecuteReaderAsync().ConfigureAwait(false);
-                if (await reader.ReadAsync().ConfigureAwait(false) && !reader.IsDBNull(1))
+                if (await reader.ReadAsync().ConfigureAwait(false) && !await reader.IsDBNullAsync(1).ConfigureAwait(false))
                 {
                     result[request.Key] = new ImdbVotes
                     {
