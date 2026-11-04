@@ -18,4 +18,4 @@ artifacts:
   - SQLitePCLRaw.batteries_v2.dll
   - SQLitePCLRaw.provider.e_sqlite3.dll
 changelog: >
-  changelog
+  NoBars fork: IMDb vote counts kept and served at /Plugins/ImdbRatings/Votes
