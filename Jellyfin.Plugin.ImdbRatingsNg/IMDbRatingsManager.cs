@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.IO.Compression;
@@ -79,7 +80,7 @@ namespace Jellyfin.Plugin.ImdbRatingsNg
             if (File.Exists(_dbPath))
             {
                 var lastWrite = File.GetLastWriteTimeUtc(_dbPath);
-                if ((DateTime.UtcNow - lastWrite).TotalHours < refreshIntervalHours)
+                if ((DateTime.UtcNow - lastWrite).TotalHours < refreshIntervalHours && HasVotesColumn())
                 {
                     return; // DB is fresh, skip update
                 }
@@ -94,7 +95,7 @@ namespace Jellyfin.Plugin.ImdbRatingsNg
                 if (File.Exists(_dbPath))
                 {
                     var lastWrite = File.GetLastWriteTimeUtc(_dbPath);
-                    if ((DateTime.UtcNow - lastWrite).TotalHours < refreshIntervalHours)
+                    if ((DateTime.UtcNow - lastWrite).TotalHours < refreshIntervalHours && HasVotesColumn())
                     {
                         return;
                     }
@@ -366,7 +367,7 @@ namespace Jellyfin.Plugin.ImdbRatingsNg
         {
             // Create table
             using var createCmd = connection.CreateCommand();
-            createCmd.CommandText = "CREATE TABLE IF NOT EXISTS Ratings (Id INTEGER PRIMARY KEY, Rating REAL)";
+            createCmd.CommandText = "CREATE TABLE IF NOT EXISTS Ratings (Id INTEGER PRIMARY KEY, Rating REAL, Votes INTEGER)";
             await createCmd.ExecuteNonQueryAsync().ConfigureAwait(false);
 
             using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync().ConfigureAwait(false);
@@ -374,9 +375,10 @@ namespace Jellyfin.Plugin.ImdbRatingsNg
             // Prepare reusable insert command
             using var insertCmd = connection.CreateCommand();
             insertCmd.Transaction = transaction;
-            insertCmd.CommandText = "INSERT INTO Ratings (Id, Rating) VALUES (@id, @rating)";
+            insertCmd.CommandText = "INSERT INTO Ratings (Id, Rating, Votes) VALUES (@id, @rating, @votes)";
             var idParam = insertCmd.Parameters.Add("@id", SqliteType.Integer);
             var ratingParam = insertCmd.Parameters.Add("@rating", SqliteType.Real);
+            var votesParam = insertCmd.Parameters.Add("@votes", SqliteType.Integer);
 
             await reader.ReadLineAsync().ConfigureAwait(false); // Skip header
 
@@ -402,6 +404,14 @@ namespace Jellyfin.Plugin.ImdbRatingsNg
                 int secondTab = remainder.IndexOf('\t');
                 ReadOnlySpan<char> ratingSpan = secondTab >= 0 ? remainder.Slice(0, secondTab) : remainder;
 
+                // 4b. The third column is the number of votes
+                ReadOnlySpan<char> votesSpan = secondTab >= 0 ? remainder.Slice(secondTab + 1) : ReadOnlySpan<char>.Empty;
+                int thirdTab = votesSpan.IndexOf('\t');
+                if (thirdTab >= 0)
+                {
+                    votesSpan = votesSpan.Slice(0, thirdTab);
+                }
+
                 // 5. Parse the spans directly into numbers
                 if (idSpan.StartsWith("tt") && int.TryParse(idSpan.Slice(2), out int numericId))
                 {
@@ -410,6 +420,7 @@ namespace Jellyfin.Plugin.ImdbRatingsNg
                         // Insert into database
                         idParam.Value = numericId;
                         ratingParam.Value = rating;
+                        votesParam.Value = int.TryParse(votesSpan, NumberStyles.Integer, CultureInfo.InvariantCulture, out int votes) ? (object)votes : DBNull.Value;
                         await insertCmd.ExecuteNonQueryAsync().ConfigureAwait(false);
                         entryCount++;
                     }
@@ -490,6 +501,92 @@ namespace Jellyfin.Plugin.ImdbRatingsNg
 
             await transaction.CommitAsync().ConfigureAwait(false);
             return entryCount;
+        }
+
+        /// <summary>
+        /// Gets the IMDb rating and number of votes for many library items in one go. Never downloads
+        /// anything: if the database is missing or predates vote counts, the answer is empty until the
+        /// next scheduled update.
+        /// </summary>
+        /// <param name="requests">The items wanted.</param>
+        /// <returns>The rating and votes per request key, for the items found.</returns>
+        public async Task<Dictionary<string, ImdbVotes>> GetVotesAsync(IReadOnlyList<VoteRequest> requests)
+        {
+            var result = new Dictionary<string, ImdbVotes>(StringComparer.Ordinal);
+            if (requests == null || requests.Count == 0 || _isUpdating || !File.Exists(_dbPath) || !HasVotesColumn())
+            {
+                return result;
+            }
+
+            bool hasEpisodes = HasEpisodesTable();
+            using var connection = new SqliteConnection($"Data Source={_dbPath};Mode=ReadOnly;Pooling=False");
+            await connection.OpenAsync().ConfigureAwait(false);
+
+            using var ratingCmd = connection.CreateCommand();
+            ratingCmd.CommandText = "SELECT Rating, Votes FROM Ratings WHERE Id = @id";
+            var idParam = ratingCmd.Parameters.Add("@id", SqliteType.Integer);
+
+            using var episodeCmd = connection.CreateCommand();
+            episodeCmd.CommandText = "SELECT Id FROM Episodes WHERE ParentId = @parentId AND Season = @season AND Episode = @episode";
+            var parentParam = episodeCmd.Parameters.Add("@parentId", SqliteType.Integer);
+            var seasonParam = episodeCmd.Parameters.Add("@season", SqliteType.Integer);
+            var episodeParam = episodeCmd.Parameters.Add("@episode", SqliteType.Integer);
+
+            foreach (var request in requests)
+            {
+                int? imdbId = request.ImdbId;
+                if (imdbId == null && hasEpisodes && request.SeriesImdbId != null && request.Season != null && request.Episode != null)
+                {
+                    parentParam.Value = request.SeriesImdbId.Value;
+                    seasonParam.Value = request.Season.Value;
+                    episodeParam.Value = request.Episode.Value;
+                    var found = await episodeCmd.ExecuteScalarAsync().ConfigureAwait(false);
+                    if (found != null && found != DBNull.Value)
+                    {
+                        imdbId = Convert.ToInt32(found, CultureInfo.InvariantCulture);
+                    }
+                }
+
+                if (imdbId == null)
+                {
+                    continue;
+                }
+
+                idParam.Value = imdbId.Value;
+                using var reader = await ratingCmd.ExecuteReaderAsync().ConfigureAwait(false);
+                if (await reader.ReadAsync().ConfigureAwait(false) && !reader.IsDBNull(1))
+                {
+                    result[request.Key] = new ImdbVotes
+                    {
+                        Rating = reader.GetFloat(0),
+                        Votes = reader.GetInt32(1),
+                    };
+                }
+            }
+
+            return result;
+        }
+
+        private bool HasVotesColumn()
+        {
+            if (!File.Exists(_dbPath))
+            {
+                return false;
+            }
+
+            try
+            {
+                using var connection = new SqliteConnection($"Data Source={_dbPath};Mode=ReadOnly;Pooling=False");
+                connection.Open();
+                using var command = connection.CreateCommand();
+                command.CommandText = "SELECT COUNT(*) FROM pragma_table_info('Ratings') WHERE name = 'Votes'";
+                var result = command.ExecuteScalar();
+                return Convert.ToInt32(result, CultureInfo.InvariantCulture) > 0;
+            }
+            catch (SqliteException)
+            {
+                return false;
+            }
         }
 
         private bool HasEpisodesTable()

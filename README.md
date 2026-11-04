@@ -1,3 +1,8 @@
+> **NoBars fork** of [verybadsoldier/jellyfin-plugin-imdbratings-ng](https://github.com/verybadsoldier/jellyfin-plugin-imdbratings-ng) (GPL-3.0).
+> Adds: the number of IMDb votes is kept next to each rating, and `GET /Plugins/ImdbRatings/Votes`
+> (signed-in users) returns `{ "<itemId>": { "Rating": 7.8, "Votes": 123456 } }` for every film, show and episode.
+> Plugin source for Jellyfin: `https://raw.githubusercontent.com/fahadhossainzzz/jellyfin-plugin-imdbratings-ng/repository/manifest.json`
+
 <p align="center">
   <img src="logo.png" alt="Jellyfin IMDb Ratings NG Plugin Logo" width="600">
 </p>

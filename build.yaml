@@ -7,9 +7,10 @@ framework: "<template>"
 image: "logo.png"
 overview: "Ratings from IMDb"
 description: >
-  Fetch IMDb ratings for movies, TV shows and episodes from the IMDb official source and use as community ratings in Jellyfin
+  Fetch IMDb ratings for movies, TV shows and episodes from the IMDb official source and use as community ratings in Jellyfin.
+  NoBars fork: also keeps the number of IMDb votes and serves them at /Plugins/ImdbRatings/Votes
 category: "General"
-owner: "verybadsoldier"
+owner: "fahadhossainzzz"
 artifacts:
   - Jellyfin.Plugin.ImdbRatingsNg.dll
   - Microsoft.Data.Sqlite.dll
