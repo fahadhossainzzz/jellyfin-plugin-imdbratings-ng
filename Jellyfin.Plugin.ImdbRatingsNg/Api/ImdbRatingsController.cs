@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Net.Mime;
 using System.Threading.Tasks;
 using Jellyfin.Data.Enums;
@@ -117,6 +118,40 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
             }
 
             return Ok(votes);
+        }
+
+        /// <summary>
+        /// Gets one of the streaming lists ("library" or "catalog") that the media server writes into
+        /// this plugin's data folder once a day.
+        /// </summary>
+        /// <param name="name">Which list: library or catalog.</param>
+        /// <response code="200">The list as JSON.</response>
+        /// <response code="404">The list has not been written yet.</response>
+        /// <returns>The JSON file.</returns>
+        [HttpGet("Streaming/{name}")]
+        [Authorize]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
+        public ActionResult GetStreamingList([FromRoute] string name)
+        {
+            if (!string.Equals(name, "library", StringComparison.Ordinal) && !string.Equals(name, "catalog", StringComparison.Ordinal))
+            {
+                return NotFound();
+            }
+
+            var folder = Plugin.Instance?.DataFolderPath;
+            if (string.IsNullOrEmpty(folder))
+            {
+                return NotFound();
+            }
+
+            var path = Path.Combine(folder, "streaming-" + name + ".json");
+            if (!System.IO.File.Exists(path))
+            {
+                return NotFound();
+            }
+
+            return PhysicalFile(path, MediaTypeNames.Application.Json);
         }
 
         private static int? NumericImdbId(string? imdbId)
