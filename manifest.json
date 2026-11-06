@@ -6,7 +6,17 @@
         "overview": "Ratings from IMDb",
         "owner": "fahadhossainzzz",
         "category": "General",
+        "image": "logo.png",
+        "imageUrl": "https://raw.githubusercontent.com/fahadhossainzzz/jellyfin-plugin-imdbratings-ng/repository/imdb-ratings-ng/logo.png",
         "versions": [
+            {
+                "version": "6.1.1.4",
+                "changelog": "NoBars fork: IMDb vote counts kept and served at /Plugins/ImdbRatings/Votes\n",
+                "targetAbi": "12.0.0.0",
+                "sourceUrl": "https://github.com/fahadhossainzzz/jellyfin-plugin-imdbratings-ng/releases/download/v6.1.1.4/imdb-ratings-ng_6.1.1.4.zip",
+                "checksum": "bf16425c14072e68ef98e38f0dcb1a11",
+                "timestamp": "2026-11-06T06:16:36Z"
+            },
             {
                 "version": "6.1.1.3",
                 "changelog": "NoBars fork: IMDb vote counts kept and served at /Plugins/ImdbRatings/Votes\n",
@@ -15,8 +25,6 @@
                 "checksum": "413b374ef8d811e93fb10a2f3be138fe",
                 "timestamp": "2026-11-04T20:31:58Z"
             }
-        ],
-        "image": "logo.png",
-        "imageUrl": "https://raw.githubusercontent.com/fahadhossainzzz/jellyfin-plugin-imdbratings-ng/repository/imdb-ratings-ng/logo.png"
+        ]
     }
 ]
