@@ -80,6 +80,14 @@
                     <pre id="nbDailyLines" style="margin-top: 0.8em; max-height: 22em; overflow: auto; white-space: pre-wrap; font-size: 0.8em; background: rgba(0,0,0,0.25); padding: 0.8em; border-radius: 6px;"></pre>
                 </div>
 
+                <div class="imdb-status-card">
+                    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5em;">
+                        <h2 style="margin: 0; font-size: 1.2em;">Weekly Jellyfin backup (to HDD2)</h2>
+                        <span id="nbBackupBadge" class="imdb-badge imdb-badge-missing">Checking...</span>
+                    </div>
+                    <div id="nbBackupSummary" style="margin-top: 0.6em; color: #ccc;">-</div>
+                </div>
+
                 <!-- Database Status Section -->
                 <div class="imdb-status-card">
                     <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5em;">
@@ -322,7 +330,8 @@
                     }
                     var cur = s.current ? (' · now working on: ' + (s.current.label || s.current.name || JSON.stringify(s.current))) : '';
                     document.querySelector('#nbImporterSummary').textContent =
-                        'Last check: ' + (s.at || '-') + cur + (s.note ? ' · ' + s.note : '');
+                        'Last check: ' + (s.at || '-') + cur + (s.note ? ' · ' + s.note : '') +
+                        (s.version ? ' · code: M2-Server ' + s.version : '');
                     var grid = document.querySelector('#nbImporterCounts');
                     grid.innerHTML = '';
                     Object.keys(s.counts || {}).forEach(function (k) {
@@ -360,10 +369,30 @@
                     }
                     document.querySelector('#nbDailySummary').textContent =
                         'Last run: ' + (s.started || '-') + ' → ' + (s.finished || '-') + ' (' + Math.round((s.seconds || 0) / 60) + ' min)' +
-                        (s.error ? ' · error: ' + s.error : '') + ' · runs daily at 07:35';
+                        (s.error ? ' · error: ' + s.error : '') + ' · runs daily at 07:35' +
+                        (s.version ? ' · code: M2-Server ' + s.version : '');
                     document.querySelector('#nbDailyLines').textContent = (s.lines || []).join('\n');
                 }).catch(function () {
                     nbBadge('#nbDailyBadge', 'No status yet', 'missing');
+                });
+                ApiClient.getJSON(ApiClient.getUrl('Plugins/ImdbRatings/ServerStatus/backup')).then(function (s) {
+                    var at = s.at ? new Date(s.at.replace(' ', 'T')) : null;
+                    var days = at ? (Date.now() - at.getTime()) / 86400000 : null;
+                    if (!s.ok) {
+                        nbBadge('#nbBackupBadge', 'Failed', 'missing');
+                    } else if (days != null && days > 9) {
+                        nbBadge('#nbBackupBadge', Math.round(days) + ' days old', 'updating');
+                    } else {
+                        nbBadge('#nbBackupBadge', 'OK', 'ready');
+                    }
+                    document.querySelector('#nbBackupSummary').textContent =
+                        'Last backup: ' + (s.at || '-') +
+                        (s.size ? ' · ' + Math.round(s.size / 1048576) + ' MB' : '') +
+                        (s.kept ? ' · ' + s.kept + ' kept on HDD2' : '') +
+                        (s.error ? ' · error: ' + s.error : '') + ' · Sundays from 08:00 (database and settings)';
+                }).catch(function () {
+                    nbBadge('#nbBackupBadge', 'Not made yet', 'missing');
+                    document.querySelector('#nbBackupSummary').textContent = 'The first one runs on Sunday from 08:00.';
                 });
             }
 

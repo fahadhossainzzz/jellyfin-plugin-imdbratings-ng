@@ -156,7 +156,7 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
 
         /// <summary>
         /// Gets the status that the M2 server scripts write into this plugin's data folder: "importer" (the media
-        /// importer, every 2 minutes) or "daily" (the daily data run). Shown on this plugin's settings page.
+        /// importer, every 2 minutes), "daily" (the daily data run) or "backup" (the weekly Jellyfin backup). Shown on this plugin's settings page.
         /// </summary>
         /// <param name="name">Which status: importer or daily.</param>
         /// <response code="200">The status as JSON.</response>
@@ -168,7 +168,8 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
         [ProducesResponseType(StatusCodes.Status404NotFound)]
         public ActionResult GetServerStatus([FromRoute] string name)
         {
-            if (!string.Equals(name, "importer", StringComparison.Ordinal) && !string.Equals(name, "daily", StringComparison.Ordinal))
+            if (!string.Equals(name, "importer", StringComparison.Ordinal) && !string.Equals(name, "daily", StringComparison.Ordinal)
+                && !string.Equals(name, "backup", StringComparison.Ordinal))
             {
                 return NotFound();
             }
