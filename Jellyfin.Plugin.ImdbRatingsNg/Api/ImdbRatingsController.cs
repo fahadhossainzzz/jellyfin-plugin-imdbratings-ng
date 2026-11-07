@@ -154,6 +154,40 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
             return PhysicalFile(path, MediaTypeNames.Application.Json);
         }
 
+        /// <summary>
+        /// Gets the status that the M2 server scripts write into this plugin's data folder: "importer" (the media
+        /// importer, every 2 minutes) or "daily" (the daily data run). Shown on this plugin's settings page.
+        /// </summary>
+        /// <param name="name">Which status: importer or daily.</param>
+        /// <response code="200">The status as JSON.</response>
+        /// <response code="404">Not written yet.</response>
+        /// <returns>The JSON file.</returns>
+        [HttpGet("ServerStatus/{name}")]
+        [Authorize]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
+        public ActionResult GetServerStatus([FromRoute] string name)
+        {
+            if (!string.Equals(name, "importer", StringComparison.Ordinal) && !string.Equals(name, "daily", StringComparison.Ordinal))
+            {
+                return NotFound();
+            }
+
+            var folder = Plugin.Instance?.DataFolderPath;
+            if (string.IsNullOrEmpty(folder))
+            {
+                return NotFound();
+            }
+
+            var path = Path.Combine(folder, "status-" + name + ".json");
+            if (!System.IO.File.Exists(path))
+            {
+                return NotFound();
+            }
+
+            return PhysicalFile(path, MediaTypeNames.Application.Json);
+        }
+
         private static int? NumericImdbId(string? imdbId)
         {
             if (string.IsNullOrWhiteSpace(imdbId) || !imdbId.StartsWith("tt", StringComparison.OrdinalIgnoreCase))

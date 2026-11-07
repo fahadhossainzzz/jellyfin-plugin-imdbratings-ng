@@ -61,6 +61,25 @@
                     }
                 </style>
 
+                <!-- NoBars: the M2 server scripts (importer + daily run), see the M2-server repository -->
+                <div class="imdb-status-card">
+                    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5em;">
+                        <h2 style="margin: 0; font-size: 1.2em;">Media importer</h2>
+                        <span id="nbImporterBadge" class="imdb-badge imdb-badge-missing">Checking...</span>
+                    </div>
+                    <div id="nbImporterSummary" style="margin-top: 0.6em; color: #ccc;">-</div>
+                    <div id="nbImporterCounts" class="imdb-status-grid"></div>
+                    <div id="nbImporterRecent" style="font-size: 0.85em; color: #bbb;"></div>
+                </div>
+                <div class="imdb-status-card">
+                    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5em;">
+                        <h2 style="margin: 0; font-size: 1.2em;">Daily data run (Netflix, Prime Video, Cinema, box office, ratings)</h2>
+                        <span id="nbDailyBadge" class="imdb-badge imdb-badge-missing">Checking...</span>
+                    </div>
+                    <div id="nbDailySummary" style="margin-top: 0.6em; color: #ccc;">-</div>
+                    <pre id="nbDailyLines" style="margin-top: 0.8em; max-height: 22em; overflow: auto; white-space: pre-wrap; font-size: 0.8em; background: rgba(0,0,0,0.25); padding: 0.8em; border-radius: 6px;"></pre>
+                </div>
+
                 <!-- Database Status Section -->
                 <div class="imdb-status-card">
                     <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5em;">
@@ -286,8 +305,71 @@
                 });
             }
 
+            function nbBadge(id, text, kind) {
+                var b = document.querySelector(id);
+                b.textContent = text;
+                b.className = 'imdb-badge imdb-badge-' + kind;
+            }
+
+            function loadServerStatus() {
+                ApiClient.getJSON(ApiClient.getUrl('Plugins/ImdbRatings/ServerStatus/importer')).then(function (s) {
+                    var at = s.at ? new Date(s.at.replace(' ', 'T')) : null;
+                    var minutes = at ? Math.round((Date.now() - at.getTime()) / 60000) : null;
+                    if (minutes != null && minutes <= 10) {
+                        nbBadge('#nbImporterBadge', 'Running', 'ready');
+                    } else {
+                        nbBadge('#nbImporterBadge', 'Not seen for ' + (minutes != null ? minutes + ' min' : 'a while'), 'missing');
+                    }
+                    var cur = s.current ? (' · now working on: ' + (s.current.label || s.current.name || JSON.stringify(s.current))) : '';
+                    document.querySelector('#nbImporterSummary').textContent =
+                        'Last check: ' + (s.at || '-') + cur + (s.note ? ' · ' + s.note : '');
+                    var grid = document.querySelector('#nbImporterCounts');
+                    grid.innerHTML = '';
+                    Object.keys(s.counts || {}).forEach(function (k) {
+                        var box = document.createElement('div');
+                        box.className = 'imdb-stat-box';
+                        var t = document.createElement('div');
+                        t.className = 'imdb-stat-title';
+                        t.textContent = k;
+                        var v = document.createElement('div');
+                        v.className = 'imdb-stat-value';
+                        v.textContent = s.counts[k];
+                        box.appendChild(t);
+                        box.appendChild(v);
+                        grid.appendChild(box);
+                    });
+                    var recent = document.querySelector('#nbImporterRecent');
+                    recent.innerHTML = '';
+                    (s.recent || []).forEach(function (e) {
+                        var line = document.createElement('div');
+                        line.textContent = (e.time || '') + '  ' + (e.kind || '') + '  ' + (e.message || '');
+                        recent.appendChild(line);
+                    });
+                }).catch(function () {
+                    nbBadge('#nbImporterBadge', 'No status yet', 'missing');
+                });
+                ApiClient.getJSON(ApiClient.getUrl('Plugins/ImdbRatings/ServerStatus/daily')).then(function (s) {
+                    var finished = s.finished ? new Date(s.finished.replace(' ', 'T')) : null;
+                    var hours = finished ? (Date.now() - finished.getTime()) / 3600000 : null;
+                    if (!s.ok) {
+                        nbBadge('#nbDailyBadge', 'Failed', 'missing');
+                    } else if (hours != null && hours > 30) {
+                        nbBadge('#nbDailyBadge', 'Not run for ' + Math.round(hours) + ' h', 'updating');
+                    } else {
+                        nbBadge('#nbDailyBadge', 'OK', 'ready');
+                    }
+                    document.querySelector('#nbDailySummary').textContent =
+                        'Last run: ' + (s.started || '-') + ' → ' + (s.finished || '-') + ' (' + Math.round((s.seconds || 0) / 60) + ' min)' +
+                        (s.error ? ' · error: ' + s.error : '') + ' · runs daily at 07:35';
+                    document.querySelector('#nbDailyLines').textContent = (s.lines || []).join('\n');
+                }).catch(function () {
+                    nbBadge('#nbDailyBadge', 'No status yet', 'missing');
+                });
+            }
+
             document.querySelector('#ImdbRatingsConfigPage')
                 .addEventListener('pageshow', function() {
+                    loadServerStatus();
                     Dashboard.showLoadingMsg();
                     ApiClient.getPluginConfiguration(ImdbRatingsConfig.pluginUniqueId).then(function (config) {
                         var selectRatingTarget = document.querySelector('#RatingTarget');
