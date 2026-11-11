@@ -155,6 +155,41 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
         }
 
         /// <summary>
+        /// Gets one title's page (cast, crew, trailers, titles like it, about) for the TV app's title page. The daily
+        /// run writes one small file per Netflix / Prime Video / Theatre / Watchlist title into "titles" in this
+        /// plugin's data folder.
+        /// </summary>
+        /// <param name="key">"movie-123" or "tv-456" (TMDB ids).</param>
+        /// <response code="200">The page as JSON.</response>
+        /// <response code="404">No page for that title.</response>
+        /// <returns>The JSON file.</returns>
+        [HttpGet("Streaming/title/{key}")]
+        [Authorize]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
+        public ActionResult GetTitlePage([FromRoute] string key)
+        {
+            if (string.IsNullOrEmpty(key) || !System.Text.RegularExpressions.Regex.IsMatch(key, "^(movie|tv)-[0-9]{1,9}$"))
+            {
+                return NotFound();
+            }
+
+            var folder = Plugin.Instance?.DataFolderPath;
+            if (string.IsNullOrEmpty(folder))
+            {
+                return NotFound();
+            }
+
+            var path = Path.Combine(folder, "titles", key + ".json");
+            if (!System.IO.File.Exists(path))
+            {
+                return NotFound();
+            }
+
+            return PhysicalFile(path, MediaTypeNames.Application.Json);
+        }
+
+        /// <summary>
         /// Gets the status that the M2 server scripts write into this plugin's data folder: "importer" (the media
         /// importer, every 2 minutes), "daily" (the daily data run) or "backup" (the weekly Jellyfin backup). Shown on this plugin's settings page.
         /// </summary>
