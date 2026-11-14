@@ -2,7 +2,11 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Net.Http;
 using System.Net.Mime;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using Jellyfin.Data.Enums;
 using MediaBrowser.Controller.Entities;
@@ -27,6 +31,12 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
         private static readonly BaseItemKind[] VotedKinds = { BaseItemKind.Movie, BaseItemKind.Series, BaseItemKind.Episode };
         private static readonly TimeSpan VotesCacheTime = TimeSpan.FromHours(1);
         private static readonly object VotesLock = new object();
+        private static readonly HttpClient TmdbHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+        private static readonly TimeSpan PersonCacheTime = TimeSpan.FromDays(30);
+        private static readonly HashSet<string> CrewJobs = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "Director", "Writer", "Screenplay", "Creator", "Novel", "Story", "Characters", "Executive Producer", "Producer"
+        };
         private readonly ILogger<ImdbRatingsController> _logger;
         private readonly ILibraryManager _libraryManager;
 
@@ -222,6 +232,159 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
             }
 
             return PhysicalFile(path, MediaTypeNames.Application.Json);
+        }
+
+        /// <summary>
+        /// Gets one person's whole career (acting, directing, writing, producing) from TMDB, trimmed to what the TV's
+        /// person panel shows, and kept for 30 days in this plugin's data folder (people/{id}.json). The TMDB key is
+        /// read from tmdb.key in the same folder (written by the M2 server; never returned).
+        /// </summary>
+        /// <param name="tmdbId">The person's TMDB id.</param>
+        /// <response code="200">The credits as JSON.</response>
+        /// <response code="404">Unknown person, or TMDB can't be reached and nothing is saved yet.</response>
+        /// <returns>The JSON.</returns>
+        [HttpGet("Person/{tmdbId}")]
+        [Authorize]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
+        public async Task<ActionResult> GetPersonCredits([FromRoute] string tmdbId)
+        {
+            if (string.IsNullOrEmpty(tmdbId) || !Regex.IsMatch(tmdbId, "^[0-9]{1,9}$"))
+            {
+                return NotFound();
+            }
+
+            var folder = Plugin.Instance?.DataFolderPath;
+            if (string.IsNullOrEmpty(folder))
+            {
+                return NotFound();
+            }
+
+            var dir = Path.Combine(folder, "people");
+            var path = Path.Combine(dir, tmdbId + ".json");
+            bool saved = System.IO.File.Exists(path);
+            if (saved && DateTime.UtcNow - System.IO.File.GetLastWriteTimeUtc(path) < PersonCacheTime)
+            {
+                return PhysicalFile(path, MediaTypeNames.Application.Json);
+            }
+
+            var keyFile = Path.Combine(folder, "tmdb.key");
+            if (!System.IO.File.Exists(keyFile))
+            {
+                return saved ? PhysicalFile(path, MediaTypeNames.Application.Json) : NotFound();
+            }
+
+            try
+            {
+                var key = (await System.IO.File.ReadAllTextAsync(keyFile).ConfigureAwait(false)).Trim();
+                var url = new Uri("https://api.themoviedb.org/3/person/" + tmdbId + "/combined_credits?language=en-US&api_key=" + Uri.EscapeDataString(key));
+                using var response = await TmdbHttp.GetAsync(url).ConfigureAwait(false);
+                if (!response.IsSuccessStatusCode)
+                {
+                    return saved ? PhysicalFile(path, MediaTypeNames.Application.Json) : NotFound();
+                }
+
+                var raw = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                var trimmed = TrimCredits(raw);
+                Directory.CreateDirectory(dir);
+                var tmp = path + ".tmp";
+                await System.IO.File.WriteAllTextAsync(tmp, trimmed).ConfigureAwait(false);
+                System.IO.File.Move(tmp, path, true);
+                return Content(trimmed, MediaTypeNames.Application.Json);
+            }
+            catch (HttpRequestException ex)
+            {
+                _logger.LogWarning(ex, "Person credits for {Id} unavailable", tmdbId);
+            }
+            catch (TaskCanceledException ex)
+            {
+                _logger.LogWarning(ex, "Person credits for {Id} timed out", tmdbId);
+            }
+            catch (JsonException ex)
+            {
+                _logger.LogWarning(ex, "Person credits for {Id} unreadable", tmdbId);
+            }
+            catch (IOException ex)
+            {
+                _logger.LogWarning(ex, "Person credits for {Id} not saved", tmdbId);
+            }
+
+            return saved ? PhysicalFile(path, MediaTypeNames.Application.Json) : NotFound();
+        }
+
+        private static string TrimCredits(string raw)
+        {
+            var root = JsonNode.Parse(raw) ?? new JsonObject();
+            var cast = new JsonArray();
+            foreach (var c in root["cast"]?.AsArray() ?? new JsonArray())
+            {
+                if (c is null)
+                {
+                    continue;
+                }
+
+                var o = Entry(c);
+                o["role"] = c["character"]?.GetValue<string>() ?? string.Empty;
+                if (c["episode_count"] is JsonNode n)
+                {
+                    o["eps"] = n.GetValue<int>();
+                }
+
+                cast.Add(o);
+            }
+
+            var crew = new Dictionary<string, JsonObject>(StringComparer.Ordinal);
+            foreach (var c in root["crew"]?.AsArray() ?? new JsonArray())
+            {
+                var job = c?["job"]?.GetValue<string>();
+                if (c is null || job is null || !CrewJobs.Contains(job))
+                {
+                    continue;
+                }
+
+                var key = (c["media_type"]?.GetValue<string>() ?? string.Empty) + c["id"]?.ToString();
+                if (crew.TryGetValue(key, out var existing))
+                {
+                    existing["role"] = existing["role"]?.GetValue<string>() + ", " + job;
+                    continue;
+                }
+
+                var o = Entry(c);
+                o["role"] = job;
+                crew[key] = o;
+            }
+
+            var crewArray = new JsonArray();
+            foreach (var o in crew.Values)
+            {
+                crewArray.Add(o);
+            }
+
+            var result = new JsonObject
+            {
+                ["at"] = DateTime.UtcNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                ["cast"] = cast,
+                ["crew"] = crewArray,
+            };
+            return result.ToJsonString();
+        }
+
+        private static JsonObject Entry(JsonNode c)
+        {
+            var type = c["media_type"]?.GetValue<string>() ?? "movie";
+            var date = c["release_date"]?.GetValue<string>() ?? c["first_air_date"]?.GetValue<string>() ?? string.Empty;
+            return new JsonObject
+            {
+                ["id"] = c["id"]?.GetValue<int>() ?? 0,
+                ["tv"] = string.Equals(type, "tv", StringComparison.Ordinal),
+                ["title"] = c["title"]?.GetValue<string>() ?? c["name"]?.GetValue<string>() ?? string.Empty,
+                ["year"] = date.Length >= 4 ? date[..4] : string.Empty,
+                ["date"] = date,
+                ["poster"] = c["poster_path"]?.GetValue<string>(),
+                ["rating"] = Math.Round(c["vote_average"]?.GetValue<double>() ?? 0, 1),
+                ["votes"] = c["vote_count"]?.GetValue<int>() ?? 0,
+                ["pop"] = Math.Round(c["popularity"]?.GetValue<double>() ?? 0, 1),
+            };
         }
 
         private static int? NumericImdbId(string? imdbId)
