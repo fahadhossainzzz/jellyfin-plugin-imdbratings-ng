@@ -313,6 +313,124 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
             return saved ? PhysicalFile(path, MediaTypeNames.Application.Json) : NotFound();
         }
 
+        /// <summary>
+        /// Gets the YouTube key of a title's trailer from TMDB (English first, then the title's own language), kept
+        /// for 30 days in this plugin's data folder (trailers/{key}.json). Used by the TV for titles outside the
+        /// daily lists (a person's "All work").
+        /// </summary>
+        /// <param name="key">"movie-123" or "tv-456" (TMDB ids).</param>
+        /// <response code="200">{"key": "YouTube key or null"}.</response>
+        /// <response code="404">Bad request or TMDB unreachable with nothing saved.</response>
+        /// <returns>The JSON.</returns>
+        [HttpGet("Trailer/{key}")]
+        [Authorize]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
+        public async Task<ActionResult> GetTrailer([FromRoute] string key)
+        {
+            if (string.IsNullOrEmpty(key) || !Regex.IsMatch(key, "^(movie|tv)-[0-9]{1,9}$"))
+            {
+                return NotFound();
+            }
+
+            var folder = Plugin.Instance?.DataFolderPath;
+            if (string.IsNullOrEmpty(folder))
+            {
+                return NotFound();
+            }
+
+            var dir = Path.Combine(folder, "trailers");
+            var path = Path.Combine(dir, key + ".json");
+            bool saved = System.IO.File.Exists(path);
+            if (saved && DateTime.UtcNow - System.IO.File.GetLastWriteTimeUtc(path) < PersonCacheTime)
+            {
+                return PhysicalFile(path, MediaTypeNames.Application.Json);
+            }
+
+            var keyFile = Path.Combine(folder, "tmdb.key");
+            if (!System.IO.File.Exists(keyFile))
+            {
+                return saved ? PhysicalFile(path, MediaTypeNames.Application.Json) : NotFound();
+            }
+
+            try
+            {
+                var apiKey = Uri.EscapeDataString((await System.IO.File.ReadAllTextAsync(keyFile).ConfigureAwait(false)).Trim());
+                var parts = key.Split('-');
+                var baseUrl = "https://api.themoviedb.org/3/" + parts[0] + "/" + parts[1];
+                var details = JsonNode.Parse(await TmdbHttp.GetStringAsync(new Uri(baseUrl + "?append_to_response=videos&include_video_language=en,null&api_key=" + apiKey)).ConfigureAwait(false));
+                var youtube = BestTrailer(details?["videos"]?["results"]?.AsArray());
+                var language = details?["original_language"]?.GetValue<string>();
+                if (youtube is null && !string.IsNullOrEmpty(language) && !string.Equals(language, "en", StringComparison.Ordinal))
+                {
+                    var own = JsonNode.Parse(await TmdbHttp.GetStringAsync(new Uri(baseUrl + "/videos?include_video_language=" + Uri.EscapeDataString(language) + ",null&api_key=" + apiKey)).ConfigureAwait(false));
+                    youtube = BestTrailer(own?["results"]?.AsArray());
+                }
+
+                var json = new JsonObject { ["key"] = youtube }.ToJsonString();
+                Directory.CreateDirectory(dir);
+                var tmp = path + ".tmp";
+                await System.IO.File.WriteAllTextAsync(tmp, json).ConfigureAwait(false);
+                System.IO.File.Move(tmp, path, true);
+                return Content(json, MediaTypeNames.Application.Json);
+            }
+            catch (HttpRequestException ex)
+            {
+                _logger.LogWarning(ex, "Trailer for {Key} unavailable", key);
+            }
+            catch (TaskCanceledException ex)
+            {
+                _logger.LogWarning(ex, "Trailer for {Key} timed out", key);
+            }
+            catch (JsonException ex)
+            {
+                _logger.LogWarning(ex, "Trailer for {Key} unreadable", key);
+            }
+            catch (IOException ex)
+            {
+                _logger.LogWarning(ex, "Trailer for {Key} not saved", key);
+            }
+
+            return saved ? PhysicalFile(path, MediaTypeNames.Application.Json) : NotFound();
+        }
+
+        private static string? BestTrailer(JsonArray? videos)
+        {
+            string? best = null;
+            int bestRank = int.MaxValue;
+            string bestDate = string.Empty;
+            foreach (var v in videos ?? new JsonArray())
+            {
+                if (v is null || !string.Equals(v["site"]?.GetValue<string>(), "YouTube", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                var type = v["type"]?.GetValue<string>();
+                bool official = v["official"]?.GetValue<bool>() ?? false;
+                int rank = type switch
+                {
+                    "Trailer" => official ? 0 : 1,
+                    "Teaser" => official ? 2 : 3,
+                    _ => -1,
+                };
+                if (rank < 0)
+                {
+                    continue;
+                }
+
+                var date = v["published_at"]?.GetValue<string>() ?? string.Empty;
+                if (rank < bestRank || (rank == bestRank && string.CompareOrdinal(date, bestDate) < 0))
+                {
+                    best = v["key"]?.GetValue<string>();
+                    bestRank = rank;
+                    bestDate = date;
+                }
+            }
+
+            return best;
+        }
+
         private static string TrimCredits(string raw)
         {
             var root = JsonNode.Parse(raw) ?? new JsonObject();
