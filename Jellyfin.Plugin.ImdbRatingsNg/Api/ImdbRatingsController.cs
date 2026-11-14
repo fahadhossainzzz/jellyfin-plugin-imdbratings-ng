@@ -37,6 +37,7 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
         {
             "Director", "Writer", "Screenplay", "Creator", "Novel", "Story", "Characters", "Executive Producer", "Producer"
         };
+
         private readonly ILogger<ImdbRatingsController> _logger;
         private readonly ILibraryManager _libraryManager;
 
@@ -384,7 +385,19 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
                 ["rating"] = Math.Round(c["vote_average"]?.GetValue<double>() ?? 0, 1),
                 ["votes"] = c["vote_count"]?.GetValue<int>() ?? 0,
                 ["pop"] = Math.Round(c["popularity"]?.GetValue<double>() ?? 0, 1),
+                ["about"] = Shorten(c["overview"]?.GetValue<string>() ?? string.Empty, 400),
             };
+        }
+
+        private static string Shorten(string text, int max)
+        {
+            if (text.Length <= max)
+            {
+                return text;
+            }
+
+            var cut = text.LastIndexOf(' ', max);
+            return string.Concat(text.AsSpan(0, cut > 0 ? cut : max), "…");
         }
 
         private static int? NumericImdbId(string? imdbId)
