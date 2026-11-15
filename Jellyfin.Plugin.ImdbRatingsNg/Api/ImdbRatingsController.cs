@@ -394,6 +394,128 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
             return saved ? PhysicalFile(path, MediaTypeNames.Application.Json) : NotFound();
         }
 
+        /// <summary>
+        /// Gets the original download's release name of a film or episode file (e.g. "Movie.2019.1080p.BluRay.x264-GRP"),
+        /// from origins.json in this plugin's data folder (written by the M2 server's importer). The TV's subtitle search
+        /// uses it to mark subtitles made for the same release.
+        /// </summary>
+        /// <param name="itemId">The film or episode.</param>
+        /// <response code="200">{"name": "release name"}.</response>
+        /// <response code="404">Unknown item, or no name recorded for its file.</response>
+        /// <returns>The JSON.</returns>
+        [HttpGet("Origin/{itemId}")]
+        [Authorize]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
+        public ActionResult GetOrigin([FromRoute] Guid itemId)
+        {
+            var folder = Plugin.Instance?.DataFolderPath;
+            var item = _libraryManager.GetItemById(itemId);
+            if (string.IsNullOrEmpty(folder) || item is null || string.IsNullOrEmpty(item.Path))
+            {
+                return NotFound();
+            }
+
+            var file = Path.Combine(folder, "origins.json");
+            if (!System.IO.File.Exists(file))
+            {
+                return NotFound();
+            }
+
+            try
+            {
+                var map = JsonNode.Parse(System.IO.File.ReadAllText(file))?.AsObject();
+                var stem = Path.Combine(Path.GetDirectoryName(item.Path) ?? string.Empty, Path.GetFileNameWithoutExtension(item.Path));
+                var name = map?[stem]?.GetValue<string>();
+                if (string.IsNullOrEmpty(name))
+                {
+                    return NotFound();
+                }
+
+                return Content(new JsonObject { ["name"] = name }.ToJsonString(), MediaTypeNames.Application.Json);
+            }
+            catch (JsonException ex)
+            {
+                _logger.LogWarning(ex, "origins.json unreadable");
+            }
+            catch (IOException ex)
+            {
+                _logger.LogWarning(ex, "origins.json unreadable");
+            }
+            catch (InvalidOperationException ex)
+            {
+                _logger.LogWarning(ex, "origins.json has an unexpected shape");
+            }
+
+            return NotFound();
+        }
+
+        /// <summary>
+        /// Asks the M2 server to check, and if needed fix, the timing of the subtitle just downloaded for this item
+        /// (subtitle-checks/{id}.json in this plugin's data folder; the importer picks it up within 2 minutes).
+        /// </summary>
+        /// <param name="itemId">The film or episode.</param>
+        /// <response code="200">{"status": "waiting"}.</response>
+        /// <response code="404">Unknown item.</response>
+        /// <returns>The JSON.</returns>
+        [HttpPost("CheckSubtitle/{itemId}")]
+        [Authorize]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
+        public ActionResult RequestSubtitleCheck([FromRoute] Guid itemId)
+        {
+            var folder = Plugin.Instance?.DataFolderPath;
+            if (string.IsNullOrEmpty(folder) || _libraryManager.GetItemById(itemId) is null)
+            {
+                return NotFound();
+            }
+
+            var dir = Path.Combine(folder, "subtitle-checks");
+            var id = itemId.ToString("N", CultureInfo.InvariantCulture);
+            Directory.CreateDirectory(dir);
+            var request = new JsonObject
+            {
+                ["id"] = id,
+                ["requested"] = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture),
+            }.ToJsonString();
+            var path = Path.Combine(dir, id + ".json");
+            System.IO.File.WriteAllText(path + ".tmp", request);
+            System.IO.File.Move(path + ".tmp", path, true);
+            System.IO.File.Delete(Path.Combine(dir, id + ".result.json"));
+            return Content(new JsonObject { ["status"] = "waiting" }.ToJsonString(), MediaTypeNames.Application.Json);
+        }
+
+        /// <summary>
+        /// Gets how the subtitle timing check for this item went: "waiting", "checking", "ok" (in sync), "fixed"
+        /// (re-timed to the film's speech) or "flagged" (doesn't fit this file), with a short message.
+        /// </summary>
+        /// <param name="itemId">The film or episode.</param>
+        /// <response code="200">The status as JSON.</response>
+        /// <response code="404">No check asked for.</response>
+        /// <returns>The JSON.</returns>
+        [HttpGet("CheckSubtitle/{itemId}")]
+        [Authorize]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
+        public ActionResult GetSubtitleCheck([FromRoute] Guid itemId)
+        {
+            var folder = Plugin.Instance?.DataFolderPath;
+            if (string.IsNullOrEmpty(folder))
+            {
+                return NotFound();
+            }
+
+            var dir = Path.Combine(folder, "subtitle-checks");
+            var id = itemId.ToString("N", CultureInfo.InvariantCulture);
+            if (System.IO.File.Exists(Path.Combine(dir, id + ".json")))
+            {
+                return Content(new JsonObject { ["status"] = "waiting" }.ToJsonString(), MediaTypeNames.Application.Json);
+            }
+
+            var result = Path.Combine(dir, id + ".result.json");
+            return System.IO.File.Exists(result) ? PhysicalFile(result, MediaTypeNames.Application.Json) : NotFound();
+        }
+
         private static string? BestTrailer(JsonArray? videos)
         {
             string? best = null;
