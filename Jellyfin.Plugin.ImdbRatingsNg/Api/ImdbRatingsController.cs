@@ -12,6 +12,7 @@ using Jellyfin.Data.Enums;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Controller.Session;
 using MediaBrowser.Model.Entities;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
@@ -40,6 +41,8 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
 
         private readonly ILogger<ImdbRatingsController> _logger;
         private readonly ILibraryManager _libraryManager;
+        private readonly IMediaSourceManager _mediaSourceManager;
+        private readonly ISessionManager _sessionManager;
 
         private static Dictionary<string, ImdbVotes>? _votesCache;
         private static DateTime _votesCachedAtUtc;
@@ -49,10 +52,14 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
         /// </summary>
         /// <param name="logger">The logger.</param>
         /// <param name="libraryManager">The library manager.</param>
-        public ImdbRatingsController(ILogger<ImdbRatingsController> logger, ILibraryManager libraryManager)
+        /// <param name="mediaSourceManager">The media source manager.</param>
+        /// <param name="sessionManager">The session manager.</param>
+        public ImdbRatingsController(ILogger<ImdbRatingsController> logger, ILibraryManager libraryManager, IMediaSourceManager mediaSourceManager, ISessionManager sessionManager)
         {
             _logger = logger;
             _libraryManager = libraryManager;
+            _mediaSourceManager = mediaSourceManager;
+            _sessionManager = sessionManager;
         }
 
         /// <summary>
@@ -514,6 +521,108 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
 
             var result = Path.Combine(dir, id + ".result.json");
             return System.IO.File.Exists(result) ? PhysicalFile(result, MediaTypeNames.Application.Json) : NotFound();
+        }
+
+        /// <summary>
+        /// Deletes one version (one file) of a film or episode that has two or more, leaving the others and every
+        /// subtitle file in the folder alone (they may belong to another version). Refuses when it is the only version,
+        /// when the file is outside the libraries' folders, or while the title is playing. Then starts a library scan,
+        /// so the title shows the remaining version(s).
+        /// </summary>
+        /// <param name="itemId">The film or episode.</param>
+        /// <param name="sourceId">The version (media source id) to delete.</param>
+        /// <response code="200">{"ok": true|false, "message": "..."}.</response>
+        /// <response code="404">Unknown item.</response>
+        /// <returns>The JSON.</returns>
+        [HttpPost("DeleteVersion/{itemId}/{sourceId}")]
+        [Authorize(Policy = "RequiresElevation")]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
+        public ActionResult DeleteVersion([FromRoute] Guid itemId, [FromRoute] string sourceId)
+        {
+            var item = _libraryManager.GetItemById(itemId);
+            if (item is null || !Guid.TryParse(sourceId, out var sourceGuid))
+            {
+                return NotFound();
+            }
+
+            var sources = _mediaSourceManager.GetStaticMediaSources(item, false);
+            if (sources.Count < 2)
+            {
+                return Answer(false, "This title has only one version; use Delete instead");
+            }
+
+            MediaBrowser.Model.Dto.MediaSourceInfo? source = null;
+            foreach (var s in sources)
+            {
+                if (Guid.TryParse(s.Id, out var g) && g == sourceGuid)
+                {
+                    source = s;
+                }
+            }
+
+            if (source is null || string.IsNullOrEmpty(source.Path) || !System.IO.File.Exists(source.Path))
+            {
+                return Answer(false, "That version's file wasn't found");
+            }
+
+            var path = Path.GetFullPath(source.Path);
+            bool inLibrary = false;
+            foreach (var folder in _libraryManager.GetVirtualFolders())
+            {
+                foreach (var location in folder.Locations ?? Array.Empty<string>())
+                {
+                    var root = Path.GetFullPath(location).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+                    if (path.StartsWith(root, StringComparison.Ordinal))
+                    {
+                        inLibrary = true;
+                    }
+                }
+            }
+
+            if (!inLibrary)
+            {
+                return Answer(false, "That file is outside the library folders");
+            }
+
+            foreach (var session in _sessionManager.Sessions)
+            {
+                var playing = session.NowPlayingItem;
+                if (playing is null)
+                {
+                    continue;
+                }
+
+                if (playing.Id == itemId || playing.Id == sourceGuid
+                    || (Guid.TryParse(session.PlayState?.MediaSourceId, out var playingSource) && playingSource == sourceGuid))
+                {
+                    return Answer(false, "This title is playing; stop it first");
+                }
+            }
+
+            try
+            {
+                System.IO.File.Delete(path);
+            }
+            catch (IOException ex)
+            {
+                _logger.LogWarning(ex, "Deleting version {Path} failed", path);
+                return Answer(false, "Couldn't delete the file: " + ex.Message);
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                _logger.LogWarning(ex, "Deleting version {Path} failed", path);
+                return Answer(false, "Not allowed to delete the file");
+            }
+
+            _logger.LogInformation("Deleted one version of {Name}: {Path}", item.Name, path);
+            _libraryManager.QueueLibraryScan();
+            return Answer(true, "Version deleted (" + Path.GetFileName(path) + "). The library updates in a minute or two.");
+        }
+
+        private ContentResult Answer(bool ok, string message)
+        {
+            return Content(new JsonObject { ["ok"] = ok, ["message"] = message }.ToJsonString(), MediaTypeNames.Application.Json);
         }
 
         private static string? BestTrailer(JsonArray? videos)
