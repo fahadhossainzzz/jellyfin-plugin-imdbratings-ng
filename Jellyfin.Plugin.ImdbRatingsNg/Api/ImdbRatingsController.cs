@@ -53,6 +53,8 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
         private static Dictionary<string, ImdbVotes>? _votesCache;
         private static DateTime _votesCachedAtUtc;
         private static Task<string?>? _historyCheck;
+        private static readonly ConcurrentDictionary<string, (DateTime At, string Json)> FactsCache = new ConcurrentDictionary<string, (DateTime At, string Json)>(StringComparer.Ordinal);
+        private static readonly TimeSpan FactsCacheTime = TimeSpan.FromHours(6);
 
         /// <summary>
         /// Initializes a new instance of the <see cref="ImdbRatingsController"/> class.
@@ -439,22 +441,60 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
         public async Task<ActionResult> GetFacts([FromQuery] string keys)
         {
             var list = (keys ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-            var valid = new List<string> { "-m", "daily.poster_facts" };
+            var wanted = new List<string>();
             foreach (var k in list)
             {
-                if (Regex.IsMatch(k, "^(movie|tv)-[0-9]{1,9}$") && valid.Count < 302)
+                if (Regex.IsMatch(k, "^(movie|tv)-[0-9]{1,9}$") && wanted.Count < 300 && !wanted.Contains(k))
                 {
-                    valid.Add(k);
+                    wanted.Add(k);
                 }
             }
 
-            if (valid.Count == 2)
+            // answers kept here for 6 hours: a row asked again (or a pop-up) is answered at once, without starting the
+            // server's program; only titles not seen yet are looked up
+            var now = DateTime.UtcNow;
+            var missing = new List<string> { "-m", "daily.poster_facts" };
+            foreach (var k in wanted)
             {
-                return Content("{}", MediaTypeNames.Application.Json);
+                if (!FactsCache.TryGetValue(k, out var hit) || now - hit.At > FactsCacheTime)
+                {
+                    missing.Add(k);
+                }
             }
 
-            var json = await RunM2Script(valid.ToArray(), TimeSpan.FromSeconds(60), "Poster facts").ConfigureAwait(false);
-            return Content(string.IsNullOrEmpty(json) ? "{}" : json, MediaTypeNames.Application.Json);
+            if (missing.Count > 2)
+            {
+                var json = await RunM2Script(missing.ToArray(), TimeSpan.FromSeconds(60), "Poster facts").ConfigureAwait(false);
+                JsonObject? got = null;
+                try
+                {
+                    got = string.IsNullOrEmpty(json) ? null : JsonNode.Parse(json) as JsonObject;
+                }
+                catch (JsonException ex)
+                {
+                    _logger.LogWarning(ex, "Poster facts unreadable");
+                }
+
+                if (got != null)
+                {
+                    for (var i = 2; i < missing.Count; i++)
+                    {
+                        // a title with no facts is remembered too, so it isn't looked up again and again
+                        FactsCache[missing[i]] = (now, got[missing[i]]?.ToJsonString() ?? string.Empty);
+                    }
+                }
+            }
+
+            var result = new JsonObject();
+            foreach (var k in wanted)
+            {
+                if (FactsCache.TryGetValue(k, out var hit) && hit.Json.Length > 0)
+                {
+                    result[k] = JsonNode.Parse(hit.Json);
+                }
+            }
+
+            return Content(result.ToJsonString(), MediaTypeNames.Application.Json);
         }
 
         /// <summary>
