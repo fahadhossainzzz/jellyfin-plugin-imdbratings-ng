@@ -373,13 +373,58 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
 
             var build = BuildTitle(key);
             var done = await Task.WhenAny(build, Task.Delay(TimeSpan.FromSeconds(30))).ConfigureAwait(false);
-            if (done == build && await build.ConfigureAwait(false) is string json)
+            if (done == build && await build.ConfigureAwait(false) is string json && json.Length > 0)
             {
                 return Content(json, MediaTypeNames.Application.Json);
             }
 
             return System.IO.File.Exists(path) ? PhysicalFile(path, MediaTypeNames.Application.Json) : NotFound();
         }
+
+        /// <summary>
+        /// Gets your watch history (films and shows you've watched, by TMDB id, with the last date and how many times).
+        /// Your history lives on Trakt; the M2 server keeps a copy that is only ever replaced from Trakt. Asking this
+        /// checks Trakt live first ("has it changed?", one small request, at most every 30 seconds) and refreshes the
+        /// copy if so, so the answer always matches Trakt.
+        /// </summary>
+        /// <response code="200">{"items": {"movie:123": ["2019-03-12", 2], "tv:456": [...]}}.</response>
+        /// <response code="404">No copy yet (Trakt not connected).</response>
+        /// <returns>The JSON.</returns>
+        [HttpGet("History")]
+        [Authorize]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
+        public async Task<ActionResult> GetHistory()
+        {
+            var folder = Plugin.Instance?.DataFolderPath;
+            if (string.IsNullOrEmpty(folder))
+            {
+                return NotFound();
+            }
+
+            var path = Path.Combine(folder, "trakt-history.json");
+            var checkedFile = Path.Combine(folder, "trakt-history.checked");
+            var recent = System.IO.File.Exists(checkedFile) && DateTime.UtcNow - System.IO.File.GetLastWriteTimeUtc(checkedFile) < TimeSpan.FromSeconds(30);
+            if (!recent)
+            {
+                var run = HistoryCheck ??= Task.Run(async () =>
+                {
+                    try
+                    {
+                        return await RunM2Script(new[] { "maintenance/trakt_sync.py", "--history" }, TimeSpan.FromSeconds(60), "History check").ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        HistoryCheck = null;
+                    }
+                });
+                await Task.WhenAny(run, Task.Delay(TimeSpan.FromSeconds(8))).ConfigureAwait(false);
+            }
+
+            return System.IO.File.Exists(path) ? PhysicalFile(path, MediaTypeNames.Application.Json) : NotFound();
+        }
+
+        private static Task<string?>? HistoryCheck { get; set; }
 
         private Task<string?> BuildTitle(string key)
         {
@@ -396,7 +441,13 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
             }));
         }
 
-        private async Task<string?> RunTitleService(string key)
+        private Task<string?> RunTitleService(string key)
+        {
+            return RunM2Script(new[] { "-m", "daily.title_service", key }, TimeSpan.FromSeconds(90), "Title service for " + key);
+        }
+
+        /// <summary>Runs one of the M2 server's Python scripts (in ~/MediaServer/m2-server, with nice); its last line of output.</summary>
+        private async Task<string?> RunM2Script(string[] args, TimeSpan timeout, string what)
         {
             var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
             var dir = Path.Combine(home, "MediaServer", "m2-server");
@@ -405,6 +456,7 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
                 return null;
             }
 
+            var key = what;
             await TitleSlots.WaitAsync().ConfigureAwait(false);
             try
             {
@@ -416,7 +468,12 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
                     RedirectStandardError = true,
                     UseShellExecute = false,
                 };
-                foreach (var a in new[] { "-n", "10", "/usr/bin/python3", "-m", "daily.title_service", key })
+                foreach (var a in new[] { "-n", "10", "/usr/bin/python3" })
+                {
+                    psi.ArgumentList.Add(a);
+                }
+
+                foreach (var a in args)
                 {
                     psi.ArgumentList.Add(a);
                 }
@@ -429,7 +486,7 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
 
                 var output = process.StandardOutput.ReadToEndAsync();
                 var errors = process.StandardError.ReadToEndAsync();
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+                using var cts = new CancellationTokenSource(timeout);
                 try
                 {
                     await process.WaitForExitAsync(cts.Token).ConfigureAwait(false);
@@ -444,25 +501,29 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
                     {
                     }
 
-                    _logger.LogWarning("Title service for {Key} took too long", key);
+                    _logger.LogWarning("{What} took too long", key);
                     return null;
                 }
 
                 var text = (await output.ConfigureAwait(false)).Trim();
                 var err = (await errors.ConfigureAwait(false)).Trim();
-                if (process.ExitCode != 0 || text.Length == 0)
+                if (process.ExitCode != 0)
                 {
-                    _logger.LogWarning("Title service for {Key} failed ({Code}): {Error}", key, process.ExitCode, err.Length > 500 ? err[^500..] : err);
+                    _logger.LogWarning("{What} failed ({Code}): {Error}", key, process.ExitCode, err.Length > 500 ? err[^500..] : err);
                     return null;
                 }
 
-                _logger.LogInformation("{Line}", err.Length > 200 ? err[^200..] : err);
+                if (err.Length > 0)
+                {
+                    _logger.LogInformation("{Line}", err.Length > 200 ? err[^200..] : err);
+                }
+
                 var lines = text.Split('\n');
                 return lines[^1].Trim();
             }
             catch (System.ComponentModel.Win32Exception ex)
             {
-                _logger.LogWarning(ex, "Title service for {Key} could not start", key);
+                _logger.LogWarning(ex, "{What} could not start", key);
                 return null;
             }
             finally
