@@ -40,6 +40,8 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
         private static readonly TimeSpan TitleCacheTime = TimeSpan.FromHours(12);
         private static readonly ConcurrentDictionary<string, Task<string?>> TitleBuilds = new ConcurrentDictionary<string, Task<string?>>(StringComparer.Ordinal);
         private static readonly SemaphoreSlim TitleSlots = new SemaphoreSlim(3, 3);
+        private static readonly ConcurrentDictionary<string, (DateTime At, string Json)> FactsCache = new ConcurrentDictionary<string, (DateTime At, string Json)>(StringComparer.Ordinal);
+        private static readonly TimeSpan FactsCacheTime = TimeSpan.FromHours(6);
         private static readonly HashSet<string> CrewJobs = new HashSet<string>(StringComparer.Ordinal)
         {
             "Director", "Writer", "Screenplay", "Creator", "Novel", "Story", "Characters", "Executive Producer", "Producer"
@@ -53,8 +55,6 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
         private static Dictionary<string, ImdbVotes>? _votesCache;
         private static DateTime _votesCachedAtUtc;
         private static Task<string?>? _historyCheck;
-        private static readonly ConcurrentDictionary<string, (DateTime At, string Json)> FactsCache = new ConcurrentDictionary<string, (DateTime At, string Json)>(StringComparer.Ordinal);
-        private static readonly TimeSpan FactsCacheTime = TimeSpan.FromHours(6);
 
         /// <summary>
         /// Initializes a new instance of the <see cref="ImdbRatingsController"/> class.
