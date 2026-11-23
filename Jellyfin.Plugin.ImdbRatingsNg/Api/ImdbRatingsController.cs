@@ -425,6 +425,92 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
             return System.IO.File.Exists(path) ? PhysicalFile(path, MediaTypeNames.Application.Json) : NotFound();
         }
 
+        /// <summary>
+        /// Gets the facts for the bottom band of posters (IMDb rating and votes, box office, budget, 🍅 when known) for
+        /// up to 300 titles at once: a person's career, "More like this". Built by the M2 server (daily/poster_facts.py):
+        /// IMDb numbers from the plugin's own database, box office from TMDB (kept a week).
+        /// </summary>
+        /// <param name="keys">Comma-separated "movie-123" / "tv-456" (TMDB ids).</param>
+        /// <response code="200">{"movie-123": {"r": 7.4, "v": 512345, "g": 343471816, "b": 185000000, "rt": 86}}.</response>
+        /// <returns>The JSON.</returns>
+        [HttpGet("Facts")]
+        [Authorize]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        public async Task<ActionResult> GetFacts([FromQuery] string keys)
+        {
+            var list = (keys ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            var valid = new List<string> { "-m", "daily.poster_facts" };
+            foreach (var k in list)
+            {
+                if (Regex.IsMatch(k, "^(movie|tv)-[0-9]{1,9}$") && valid.Count < 302)
+                {
+                    valid.Add(k);
+                }
+            }
+
+            if (valid.Count == 2)
+            {
+                return Content("{}", MediaTypeNames.Application.Json);
+            }
+
+            var json = await RunM2Script(valid.ToArray(), TimeSpan.FromSeconds(60), "Poster facts").ConfigureAwait(false);
+            return Content(string.IsNullOrEmpty(json) ? "{}" : json, MediaTypeNames.Application.Json);
+        }
+
+        /// <summary>
+        /// Adds a viewing to your Trakt watch history from the TV (Trakt is where your history lives): a film, a whole
+        /// series, one season or one episode, watched just now, on its release date, on a given day or on an unknown date.
+        /// The server's copy of your history is refreshed at once.
+        /// </summary>
+        /// <param name="key">"movie-123" or "tv-456" (TMDB ids).</param>
+        /// <param name="when">now, released, unknown, or a day (yyyy-MM-dd).</param>
+        /// <param name="season">For a season or an episode of a series.</param>
+        /// <param name="episode">For one episode.</param>
+        /// <response code="200">{"ok": true, "added": 1}.</response>
+        /// <response code="400">Bad request, or Trakt refused it.</response>
+        /// <returns>The JSON.</returns>
+        [HttpPost("History/Mark")]
+        [Authorize]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status400BadRequest)]
+        public async Task<ActionResult> MarkWatched([FromQuery] string key, [FromQuery] string when, [FromQuery] int? season, [FromQuery] int? episode)
+        {
+            if (string.IsNullOrEmpty(key) || !Regex.IsMatch(key, "^(movie|tv)-[0-9]{1,9}$")
+                || string.IsNullOrEmpty(when) || !Regex.IsMatch(when, "^(now|released|unknown|[0-9]{4}-[0-9]{2}-[0-9]{2})$"))
+            {
+                return BadRequest();
+            }
+
+            var args = new List<string> { "maintenance/trakt_sync.py", "--mark", key, when, season?.ToString(CultureInfo.InvariantCulture) ?? "-", episode?.ToString(CultureInfo.InvariantCulture) ?? "-" };
+            var json = await RunM2Script(args.ToArray(), TimeSpan.FromSeconds(60), "Mark watched").ConfigureAwait(false);
+            return string.IsNullOrEmpty(json) ? BadRequest() : Content(json, MediaTypeNames.Application.Json);
+        }
+
+        /// <summary>
+        /// Removes every viewing of a film, a series, a season or an episode from your Trakt watch history (from the TV).
+        /// </summary>
+        /// <param name="key">"movie-123" or "tv-456" (TMDB ids).</param>
+        /// <param name="season">For a season or an episode of a series.</param>
+        /// <param name="episode">For one episode.</param>
+        /// <response code="200">{"ok": true, "removed": 2}.</response>
+        /// <response code="400">Bad request, or Trakt refused it.</response>
+        /// <returns>The JSON.</returns>
+        [HttpPost("History/Unmark")]
+        [Authorize]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status400BadRequest)]
+        public async Task<ActionResult> UnmarkWatched([FromQuery] string key, [FromQuery] int? season, [FromQuery] int? episode)
+        {
+            if (string.IsNullOrEmpty(key) || !Regex.IsMatch(key, "^(movie|tv)-[0-9]{1,9}$"))
+            {
+                return BadRequest();
+            }
+
+            var args = new List<string> { "maintenance/trakt_sync.py", "--unmark", key, season?.ToString(CultureInfo.InvariantCulture) ?? "-", episode?.ToString(CultureInfo.InvariantCulture) ?? "-" };
+            var json = await RunM2Script(args.ToArray(), TimeSpan.FromSeconds(60), "Remove from history").ConfigureAwait(false);
+            return string.IsNullOrEmpty(json) ? BadRequest() : Content(json, MediaTypeNames.Application.Json);
+        }
+
         private Task<string?> BuildTitle(string key)
         {
             return TitleBuilds.GetOrAdd(key, k => Task.Run(async () =>
