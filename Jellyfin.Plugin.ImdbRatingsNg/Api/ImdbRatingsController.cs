@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Net.Http;
@@ -7,6 +9,7 @@ using System.Net.Mime;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Data.Enums;
 using MediaBrowser.Controller.Entities;
@@ -34,6 +37,9 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
         private static readonly object VotesLock = new object();
         private static readonly HttpClient TmdbHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
         private static readonly TimeSpan PersonCacheTime = TimeSpan.FromDays(30);
+        private static readonly TimeSpan TitleCacheTime = TimeSpan.FromHours(12);
+        private static readonly ConcurrentDictionary<string, Task<string?>> TitleBuilds = new ConcurrentDictionary<string, Task<string?>>(StringComparer.Ordinal);
+        private static readonly SemaphoreSlim TitleSlots = new SemaphoreSlim(3, 3);
         private static readonly HashSet<string> CrewJobs = new HashSet<string>(StringComparer.Ordinal)
         {
             "Director", "Writer", "Screenplay", "Creator", "Novel", "Story", "Characters", "Executive Producer", "Producer"
@@ -318,6 +324,147 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
             }
 
             return saved ? PhysicalFile(path, MediaTypeNames.Application.Json) : NotFound();
+        }
+
+        /// <summary>
+        /// Gets everything about one title for the TV (card, ratings, where it streams in India and worldwide, the
+        /// Netflix link, its journey and its My list status), built on demand by the M2 server's title service
+        /// (~/MediaServer/m2-server, "python3 -m daily.title_service movie-123") and kept in cards/{key}.json.
+        /// A copy younger than 12 hours is returned at once; an older one is returned at once too while a fresh one is
+        /// built in the background; with no copy at all the request waits for the build (about a second).
+        /// </summary>
+        /// <param name="key">"movie-123" or "tv-456" (TMDB ids).</param>
+        /// <param name="fresh">True to rebuild now even if a recent copy exists.</param>
+        /// <response code="200">The card as JSON.</response>
+        /// <response code="404">Bad request, or the title can't be built and nothing is saved.</response>
+        /// <returns>The JSON.</returns>
+        [HttpGet("Title/{key}")]
+        [Authorize]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
+        public async Task<ActionResult> GetTitle([FromRoute] string key, [FromQuery] bool fresh = false)
+        {
+            if (string.IsNullOrEmpty(key) || !Regex.IsMatch(key, "^(movie|tv)-[0-9]{1,9}$"))
+            {
+                return NotFound();
+            }
+
+            var folder = Plugin.Instance?.DataFolderPath;
+            if (string.IsNullOrEmpty(folder))
+            {
+                return NotFound();
+            }
+
+            var path = Path.Combine(folder, "cards", key + ".json");
+            bool saved = System.IO.File.Exists(path);
+            if (saved && !fresh)
+            {
+                if (DateTime.UtcNow - System.IO.File.GetLastWriteTimeUtc(path) >= TitleCacheTime)
+                {
+                    _ = BuildTitle(key); // refresh in the background; this answer doesn't wait
+                }
+
+                return PhysicalFile(path, MediaTypeNames.Application.Json);
+            }
+
+            var build = BuildTitle(key);
+            var done = await Task.WhenAny(build, Task.Delay(TimeSpan.FromSeconds(30))).ConfigureAwait(false);
+            if (done == build && build.Result is string json)
+            {
+                return Content(json, MediaTypeNames.Application.Json);
+            }
+
+            return System.IO.File.Exists(path) ? PhysicalFile(path, MediaTypeNames.Application.Json) : NotFound();
+        }
+
+        private Task<string?> BuildTitle(string key)
+        {
+            return TitleBuilds.GetOrAdd(key, k => Task.Run(async () =>
+            {
+                try
+                {
+                    return await RunTitleService(k).ConfigureAwait(false);
+                }
+                finally
+                {
+                    TitleBuilds.TryRemove(k, out _);
+                }
+            }));
+        }
+
+        private async Task<string?> RunTitleService(string key)
+        {
+            var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            var dir = Path.Combine(home, "MediaServer", "m2-server");
+            if (!Directory.Exists(Path.Combine(dir, "daily")))
+            {
+                return null;
+            }
+
+            await TitleSlots.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                // nice: a title lookup never takes CPU from playback
+                var psi = new ProcessStartInfo("/usr/bin/nice")
+                {
+                    WorkingDirectory = dir,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                };
+                foreach (var a in new[] { "-n", "10", "/usr/bin/python3", "-m", "daily.title_service", key })
+                {
+                    psi.ArgumentList.Add(a);
+                }
+
+                using var process = Process.Start(psi);
+                if (process == null)
+                {
+                    return null;
+                }
+
+                var output = process.StandardOutput.ReadToEndAsync();
+                var errors = process.StandardError.ReadToEndAsync();
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+                try
+                {
+                    await process.WaitForExitAsync(cts.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    try
+                    {
+                        process.Kill(true);
+                    }
+                    catch (InvalidOperationException)
+                    {
+                    }
+
+                    _logger.LogWarning("Title service for {Key} took too long", key);
+                    return null;
+                }
+
+                var text = (await output.ConfigureAwait(false)).Trim();
+                var err = (await errors.ConfigureAwait(false)).Trim();
+                if (process.ExitCode != 0 || text.Length == 0)
+                {
+                    _logger.LogWarning("Title service for {Key} failed ({Code}): {Error}", key, process.ExitCode, err.Length > 500 ? err[^500..] : err);
+                    return null;
+                }
+
+                _logger.LogInformation("{Line}", err.Length > 200 ? err[^200..] : err);
+                var lines = text.Split('\n');
+                return lines[^1].Trim();
+            }
+            catch (System.ComponentModel.Win32Exception ex)
+            {
+                _logger.LogWarning(ex, "Title service for {Key} could not start", key);
+                return null;
+            }
+            finally
+            {
+                TitleSlots.Release();
+            }
         }
 
         /// <summary>
