@@ -369,7 +369,7 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
 
             var build = BuildTitle(key);
             var done = await Task.WhenAny(build, Task.Delay(TimeSpan.FromSeconds(30))).ConfigureAwait(false);
-            if (done == build && build.Result is string json)
+            if (done == build && await build.ConfigureAwait(false) is string json)
             {
                 return Content(json, MediaTypeNames.Application.Json);
             }
