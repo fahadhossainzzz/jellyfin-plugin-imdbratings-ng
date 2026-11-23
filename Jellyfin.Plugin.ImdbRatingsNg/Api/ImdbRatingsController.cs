@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Net.Http;
 using System.Net.Mime;
 using System.Text.Json;
@@ -55,6 +56,7 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
         private static Dictionary<string, ImdbVotes>? _votesCache;
         private static DateTime _votesCachedAtUtc;
         private static Task<string?>? _historyCheck;
+        private static (DateTime At, List<JsonObject> Items)? _shelf;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="ImdbRatingsController"/> class.
@@ -406,6 +408,126 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
             }
 
             var path = Path.Combine(folder, "trakt-history.json");
+            await CheckHistory(folder).ConfigureAwait(false);
+            return System.IO.File.Exists(path) ? PhysicalFile(path, MediaTypeNames.Application.Json) : NotFound();
+        }
+
+        /// <summary>
+        /// Gets the History page from your Trakt history (history-shelf.json, built by the M2 server with posters and
+        /// IMDb ratings). Without a row: the page's rows (Recently watched, then one per year), 24 titles each, with
+        /// each row's total. With a row: one page of it for its "See all" grid, sorted and filtered.
+        /// </summary>
+        /// <param name="row">"recent", a year ("2025"), or "unknown" (no date).</param>
+        /// <param name="offset">First title of the page.</param>
+        /// <param name="limit">Titles in the page (at most 200).</param>
+        /// <param name="sort">watched (default), rating, title, year.</param>
+        /// <param name="kind">all (default), movie, tv.</param>
+        /// <param name="genre">Only this genre.</param>
+        /// <response code="200">{"rows": [{"id", "name", "total", "items"}]} or {"total", "items"}.</response>
+        /// <returns>The JSON.</returns>
+        [HttpGet("History/Shelf")]
+        [Authorize]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        public async Task<ActionResult> GetHistoryShelf(
+            [FromQuery] string? row,
+            [FromQuery] int offset = 0,
+            [FromQuery] int limit = 60,
+            [FromQuery] string? sort = null,
+            [FromQuery] string? kind = null,
+            [FromQuery] string? genre = null)
+        {
+            var folder = Plugin.Instance?.DataFolderPath;
+            if (string.IsNullOrEmpty(folder))
+            {
+                return NotFound();
+            }
+
+            await CheckHistory(folder).ConfigureAwait(false);
+            var all = ReadShelf(Path.Combine(folder, "history-shelf.json"));
+            static string Year(JsonObject o)
+            {
+                var d = o["d"]?.GetValue<string>() ?? string.Empty;
+                return d.Length >= 4 ? d.Substring(0, 4) : "unknown";
+            }
+
+            if (string.IsNullOrEmpty(row))
+            {
+                var rows = new JsonArray();
+                void Add(string id, string name, List<JsonObject> items)
+                {
+                    if (items.Count == 0)
+                    {
+                        return;
+                    }
+
+                    var arr = new JsonArray();
+                    foreach (var o in items.GetRange(0, Math.Min(24, items.Count)))
+                    {
+                        arr.Add(o.DeepClone());
+                    }
+
+                    rows.Add(new JsonObject { ["id"] = id, ["name"] = name, ["total"] = items.Count, ["items"] = arr });
+                }
+
+                Add("recent", "Recently watched", all.FindAll(o => !string.IsNullOrEmpty(o["d"]?.GetValue<string>())));
+                var years = new List<string>();
+                foreach (var o in all)
+                {
+                    var y = Year(o);
+                    if (!years.Contains(y))
+                    {
+                        years.Add(y);
+                    }
+                }
+
+                foreach (var y in years)
+                {
+                    if (y != "unknown")
+                    {
+                        Add(y, y, all.FindAll(o => Year(o) == y));
+                    }
+                }
+
+                Add("unknown", "Watched, date unknown", all.FindAll(o => Year(o) == "unknown"));
+                return Content(new JsonObject { ["rows"] = rows }.ToJsonString(), MediaTypeNames.Application.Json);
+            }
+
+            var list = row == "recent" ? all.FindAll(o => Year(o) != "unknown") : all.FindAll(o => Year(o) == row);
+            if (kind == "movie" || kind == "tv")
+            {
+                list = list.FindAll(o => (o["k"]?.GetValue<string>() ?? string.Empty).StartsWith(kind + ":", StringComparison.Ordinal));
+            }
+
+            if (!string.IsNullOrEmpty(genre))
+            {
+                list = list.FindAll(o => o["g"] is JsonArray g && g.Any(x => string.Equals(x?.GetValue<string>(), genre, StringComparison.OrdinalIgnoreCase)));
+            }
+
+            static double Num(JsonObject o, string k) => o[k] is JsonValue v && v.TryGetValue<double>(out var d) ? d : 0;
+            list = sort switch
+            {
+                // titles with under 1,000 IMDb votes go last
+                "rating" => list.OrderByDescending(o => Num(o, "v") >= 1000).ThenByDescending(o => Num(o, "r")).ToList(),
+                "title" => list.OrderBy(o => o["t"]?.GetValue<string>() ?? string.Empty, StringComparer.OrdinalIgnoreCase).ToList(),
+                "year" => list.OrderByDescending(o => Num(o, "y")).ToList(),
+                _ => list,
+            };
+            var page = new JsonArray();
+            var start = Math.Clamp(offset, 0, list.Count);
+            foreach (var o in list.Skip(start).Take(Math.Clamp(limit, 1, 200)))
+            {
+                page.Add(o.DeepClone());
+            }
+
+            return Content(new JsonObject { ["total"] = list.Count, ["items"] = page }.ToJsonString(), MediaTypeNames.Application.Json);
+        }
+
+        /// <summary>
+        /// Asks Trakt (through the M2 server) whether your history changed, at most every 30 seconds, and waits up to
+        /// 8 seconds for the copy to be refreshed.
+        /// </summary>
+        private async Task CheckHistory(string folder)
+        {
             var checkedFile = Path.Combine(folder, "trakt-history.checked");
             var recent = System.IO.File.Exists(checkedFile) && DateTime.UtcNow - System.IO.File.GetLastWriteTimeUtc(checkedFile) < TimeSpan.FromSeconds(30);
             if (!recent)
@@ -414,7 +536,7 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
                 {
                     try
                     {
-                        return await RunM2Script(new[] { "maintenance/trakt_sync.py", "--history" }, TimeSpan.FromSeconds(60), "History check").ConfigureAwait(false);
+                        return await RunM2Script(new[] { "maintenance/trakt_sync.py", "--history" }, TimeSpan.FromSeconds(90), "History check").ConfigureAwait(false);
                     }
                     finally
                     {
@@ -423,8 +545,47 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
                 });
                 await Task.WhenAny(run, Task.Delay(TimeSpan.FromSeconds(8))).ConfigureAwait(false);
             }
+        }
 
-            return System.IO.File.Exists(path) ? PhysicalFile(path, MediaTypeNames.Application.Json) : NotFound();
+        /// <summary>
+        /// The shelf's titles, read once and kept until the file changes.
+        /// </summary>
+        private List<JsonObject> ReadShelf(string path)
+        {
+            if (!System.IO.File.Exists(path))
+            {
+                return new List<JsonObject>();
+            }
+
+            var at = System.IO.File.GetLastWriteTimeUtc(path);
+            var cached = _shelf;
+            if (cached.HasValue && cached.Value.At == at)
+            {
+                return cached.Value.Items;
+            }
+
+            var items = new List<JsonObject>();
+            try
+            {
+                if (JsonNode.Parse(System.IO.File.ReadAllText(path))?["items"] is JsonArray arr)
+                {
+                    foreach (var n in arr)
+                    {
+                        if (n is JsonObject o)
+                        {
+                            items.Add(o);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex) when (ex is JsonException || ex is IOException)
+            {
+                _logger.LogWarning(ex, "History shelf unreadable");
+                return cached?.Items ?? items;
+            }
+
+            _shelf = (at, items);
+            return items;
         }
 
         /// <summary>
