@@ -10,6 +10,14 @@
         "imageUrl": "https://raw.githubusercontent.com/fahadhossainzzz/jellyfin-plugin-imdbratings-ng/repository/imdb-ratings-ng/logo.png",
         "versions": [
             {
+                "version": "6.1.1.20",
+                "changelog": "NoBars fork: IMDb vote counts kept and served at /Plugins/ImdbRatings/Votes\n",
+                "targetAbi": "12.0.0.0",
+                "sourceUrl": "https://github.com/fahadhossainzzz/jellyfin-plugin-imdbratings-ng/releases/download/v6.1.1.20/imdb-ratings-ng_6.1.1.20.zip",
+                "checksum": "b2c1d5e6d4276bbec765112e99880a39",
+                "timestamp": "2026-11-23T14:56:07Z"
+            },
+            {
                 "version": "6.1.1.18",
                 "changelog": "NoBars fork: IMDb vote counts kept and served at /Plugins/ImdbRatings/Votes\n",
                 "targetAbi": "12.0.0.0",
