@@ -52,6 +52,7 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
 
         private static Dictionary<string, ImdbVotes>? _votesCache;
         private static DateTime _votesCachedAtUtc;
+        private static Task<string?>? _historyCheck;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="ImdbRatingsController"/> class.
@@ -407,7 +408,7 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
             var recent = System.IO.File.Exists(checkedFile) && DateTime.UtcNow - System.IO.File.GetLastWriteTimeUtc(checkedFile) < TimeSpan.FromSeconds(30);
             if (!recent)
             {
-                var run = HistoryCheck ??= Task.Run(async () =>
+                var run = _historyCheck ??= Task.Run(async () =>
                 {
                     try
                     {
@@ -415,7 +416,7 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
                     }
                     finally
                     {
-                        HistoryCheck = null;
+                        _historyCheck = null;
                     }
                 });
                 await Task.WhenAny(run, Task.Delay(TimeSpan.FromSeconds(8))).ConfigureAwait(false);
@@ -423,8 +424,6 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
 
             return System.IO.File.Exists(path) ? PhysicalFile(path, MediaTypeNames.Application.Json) : NotFound();
         }
-
-        private static Task<string?>? HistoryCheck { get; set; }
 
         private Task<string?> BuildTitle(string key)
         {
