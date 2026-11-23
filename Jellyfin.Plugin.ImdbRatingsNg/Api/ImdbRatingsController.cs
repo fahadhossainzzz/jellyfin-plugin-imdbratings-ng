@@ -422,7 +422,8 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
         /// <param name="limit">Titles in the page (at most 200).</param>
         /// <param name="sort">watched (default), rating, title, year.</param>
         /// <param name="kind">all (default), movie, tv.</param>
-        /// <param name="genre">Only this genre.</param>
+        /// <param name="genre">Only these genres (comma-separated; any of them).</param>
+        /// <param name="reverse">The other way round.</param>
         /// <response code="200">{"rows": [{"id", "name", "total", "items"}]} or {"total", "items"}.</response>
         /// <returns>The JSON.</returns>
         [HttpGet("History/Shelf")]
@@ -434,7 +435,8 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
             [FromQuery] int limit = 60,
             [FromQuery] string? sort = null,
             [FromQuery] string? kind = null,
-            [FromQuery] string? genre = null)
+            [FromQuery] string? genre = null,
+            [FromQuery] bool reverse = false)
         {
             var folder = Plugin.Instance?.DataFolderPath;
             if (string.IsNullOrEmpty(folder))
@@ -498,9 +500,27 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
                 list = list.FindAll(o => (o["k"]?.GetValue<string>() ?? string.Empty).StartsWith(kind + ":", StringComparison.Ordinal));
             }
 
+            // every genre in the row, for the grid's Genre filter
+            var genres = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var o in list)
+            {
+                if (o["g"] is JsonArray ga)
+                {
+                    foreach (var x in ga)
+                    {
+                        var name = x?.GetValue<string>();
+                        if (!string.IsNullOrEmpty(name))
+                        {
+                            genres.Add(name);
+                        }
+                    }
+                }
+            }
+
             if (!string.IsNullOrEmpty(genre))
             {
-                list = list.FindAll(o => o["g"] is JsonArray g && g.Any(x => string.Equals(x?.GetValue<string>(), genre, StringComparison.OrdinalIgnoreCase)));
+                var wanted = genre.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                list = list.FindAll(o => o["g"] is JsonArray g && g.Any(x => wanted.Contains(x?.GetValue<string>() ?? string.Empty, StringComparer.OrdinalIgnoreCase)));
             }
 
             static double Num(JsonObject o, string k) => o[k] is JsonValue v && v.TryGetValue<double>(out var d) ? d : 0;
@@ -512,6 +532,11 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
                 "year" => list.OrderByDescending(o => Num(o, "y")).ToList(),
                 _ => list,
             };
+            if (reverse)
+            {
+                list = Enumerable.Reverse(list).ToList();
+            }
+
             var page = new JsonArray();
             var start = Math.Clamp(offset, 0, list.Count);
             foreach (var o in list.Skip(start).Take(Math.Clamp(limit, 1, 200)))
@@ -519,7 +544,13 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
                 page.Add(o.DeepClone());
             }
 
-            return Content(new JsonObject { ["total"] = list.Count, ["items"] = page }.ToJsonString(), MediaTypeNames.Application.Json);
+            var genreList = new JsonArray();
+            foreach (var g in genres)
+            {
+                genreList.Add(g);
+            }
+
+            return Content(new JsonObject { ["total"] = list.Count, ["items"] = page, ["genres"] = genreList }.ToJsonString(), MediaTypeNames.Application.Json);
         }
 
         /// <summary>
