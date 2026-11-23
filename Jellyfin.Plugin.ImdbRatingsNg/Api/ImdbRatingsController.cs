@@ -277,7 +277,9 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
             var dir = Path.Combine(folder, "people");
             var path = Path.Combine(dir, tmdbId + ".json");
             bool saved = System.IO.File.Exists(path);
-            if (saved && DateTime.UtcNow - System.IO.File.GetLastWriteTimeUtc(path) < PersonCacheTime)
+            // a copy saved before profiles were added (no "profile") is fetched again once
+            if (saved && DateTime.UtcNow - System.IO.File.GetLastWriteTimeUtc(path) < PersonCacheTime
+                && (await System.IO.File.ReadAllTextAsync(path).ConfigureAwait(false)).Contains("\"profile\"", StringComparison.Ordinal))
             {
                 return PhysicalFile(path, MediaTypeNames.Application.Json);
             }
@@ -291,7 +293,9 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
             try
             {
                 var key = (await System.IO.File.ReadAllTextAsync(keyFile).ConfigureAwait(false)).Trim();
-                var url = new Uri("https://api.themoviedb.org/3/person/" + tmdbId + "/combined_credits?language=en-US&api_key=" + Uri.EscapeDataString(key));
+                // one TMDB request: the profile, the whole career and the photos; height from Trakt alongside
+                var url = new Uri("https://api.themoviedb.org/3/person/" + tmdbId + "?append_to_response=combined_credits,images&language=en-US&api_key=" + Uri.EscapeDataString(key));
+                var heightTask = TraktHeight(folder, tmdbId);
                 using var response = await TmdbHttp.GetAsync(url).ConfigureAwait(false);
                 if (!response.IsSuccessStatusCode)
                 {
@@ -299,7 +303,7 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
                 }
 
                 var raw = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-                var trimmed = TrimCredits(raw);
+                var trimmed = TrimCredits(raw, await heightTask.ConfigureAwait(false));
                 Directory.CreateDirectory(dir);
                 var tmp = path + ".tmp";
                 await System.IO.File.WriteAllTextAsync(tmp, trimmed).ConfigureAwait(false);
@@ -809,9 +813,74 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
             return best;
         }
 
-        private static string TrimCredits(string raw)
+        /// <summary>
+        /// A person's height in centimetres from Trakt (TMDB has none), found by their TMDB id. Needs the Trakt app's
+        /// public client id in trakt.client in this plugin's data folder (written by the M2 server). Null if unknown.
+        /// </summary>
+        private async Task<int?> TraktHeight(string folder, string tmdbId)
         {
-            var root = JsonNode.Parse(raw) ?? new JsonObject();
+            try
+            {
+                var idFile = Path.Combine(folder, "trakt.client");
+                if (!System.IO.File.Exists(idFile))
+                {
+                    return null;
+                }
+
+                var client = (await System.IO.File.ReadAllTextAsync(idFile).ConfigureAwait(false)).Trim();
+                async Task<JsonNode?> Get(string url)
+                {
+                    using var req = new HttpRequestMessage(HttpMethod.Get, url);
+                    req.Headers.TryAddWithoutValidation("trakt-api-version", "2");
+                    req.Headers.TryAddWithoutValidation("trakt-api-key", client);
+                    req.Headers.TryAddWithoutValidation("User-Agent", "NoBars/1.0");
+                    using var res = await TmdbHttp.SendAsync(req).ConfigureAwait(false);
+                    return res.IsSuccessStatusCode ? JsonNode.Parse(await res.Content.ReadAsStringAsync().ConfigureAwait(false)) : null;
+                }
+
+                var found = await Get("https://api.trakt.tv/search/tmdb/" + tmdbId + "?type=person").ConfigureAwait(false);
+                var slug = found?.AsArray().Count > 0 ? found[0]?["person"]?["ids"]?["slug"]?.GetValue<string>() : null;
+                if (string.IsNullOrEmpty(slug))
+                {
+                    return null;
+                }
+
+                var person = await Get("https://api.trakt.tv/people/" + Uri.EscapeDataString(slug) + "?extended=full").ConfigureAwait(false);
+                var h = person?["height"];
+                if (h is null)
+                {
+                    return null;
+                }
+
+                var value = h.GetValueKind() == JsonValueKind.Number ? h.GetValue<double>() : double.TryParse(h.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : 0;
+                var cm = value < 3 ? value * 100 : value; // metres or centimetres
+                return cm >= 50 && cm <= 260 ? (int)Math.Round(cm) : null;
+            }
+            catch (HttpRequestException ex)
+            {
+                _logger.LogDebug(ex, "Trakt height for {Id} unavailable", tmdbId);
+            }
+            catch (TaskCanceledException ex)
+            {
+                _logger.LogDebug(ex, "Trakt height for {Id} timed out", tmdbId);
+            }
+            catch (JsonException ex)
+            {
+                _logger.LogDebug(ex, "Trakt height for {Id} unreadable", tmdbId);
+            }
+            catch (InvalidOperationException ex)
+            {
+                _logger.LogDebug(ex, "Trakt height for {Id} unexpected", tmdbId);
+            }
+
+            return null;
+        }
+
+        private static string TrimCredits(string raw, int? heightCm = null)
+        {
+            var person = JsonNode.Parse(raw) ?? new JsonObject();
+            // the career sits under "combined_credits" when the profile is asked for too
+            var root = person["combined_credits"] ?? person;
             var cast = new JsonArray();
             foreach (var c in root["cast"]?.AsArray() ?? new JsonArray())
             {
@@ -863,6 +932,45 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
                 ["cast"] = cast,
                 ["crew"] = crewArray,
             };
+            if (person["name"] is not null)
+            {
+                var photos = new JsonArray();
+                foreach (var img in person["images"]?["profiles"]?.AsArray() ?? new JsonArray())
+                {
+                    var file = img?["file_path"]?.GetValue<string>();
+                    if (!string.IsNullOrEmpty(file) && photos.Count < 12)
+                    {
+                        photos.Add(file);
+                    }
+                }
+
+                // other names worth showing: the ones in another script (हिन्दी, বাংলা, 日本語 ...), at most three
+                var aka = new JsonArray();
+                foreach (var n in person["also_known_as"]?.AsArray() ?? new JsonArray())
+                {
+                    var name = n?.GetValue<string>();
+                    if (!string.IsNullOrEmpty(name) && aka.Count < 3 && Regex.IsMatch(name, "[^\\u0000-\\u024F]"))
+                    {
+                        aka.Add(name);
+                    }
+                }
+
+                result["profile"] = new JsonObject
+                {
+                    ["name"] = person["name"]?.GetValue<string>(),
+                    ["bio"] = person["biography"]?.GetValue<string>(),
+                    ["born"] = person["birthday"]?.GetValue<string>(),
+                    ["died"] = person["deathday"]?.GetValue<string>(),
+                    ["place"] = person["place_of_birth"]?.GetValue<string>(),
+                    ["known"] = person["known_for_department"]?.GetValue<string>(),
+                    ["photo"] = person["profile_path"]?.GetValue<string>(),
+                    ["imdb"] = person["imdb_id"]?.GetValue<string>(),
+                    ["height"] = heightCm,
+                    ["aka"] = aka,
+                    ["photos"] = photos,
+                };
+            }
+
             return result.ToJsonString();
         }
 
