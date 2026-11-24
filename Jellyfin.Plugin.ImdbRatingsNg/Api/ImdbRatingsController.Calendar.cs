@@ -41,6 +41,26 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
             }
 
             var path = Path.Combine(folder, "calendar", month + ".json");
+            var run = BuildCalendarIfStale(folder, month);
+            if (run != null && !System.IO.File.Exists(path))
+            {
+                await run.ConfigureAwait(false);
+            }
+
+            // the next month too, in the background, so moving to it is instant
+            var next = DateTime.ParseExact(month + "-01", "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture).AddMonths(1);
+            _ = BuildCalendarIfStale(folder, next.ToString("yyyy-MM", System.Globalization.CultureInfo.InvariantCulture));
+
+            return System.IO.File.Exists(path) ? PhysicalFile(path, MediaTypeNames.Application.Json) : NotFound();
+        }
+
+        /// <summary>
+        /// Starts building a month of the Calendar when its copy is missing, older than 3 hours (a day for a month that
+        /// is over) or older than your Trakt history; one build per month at a time.
+        /// </summary>
+        private Task<string?>? BuildCalendarIfStale(string folder, string month)
+        {
+            var path = Path.Combine(folder, "calendar", month + ".json");
             var history = Path.Combine(folder, "trakt-history.json");
             var exists = System.IO.File.Exists(path);
             var built = exists ? System.IO.File.GetLastWriteTimeUtc(path) : DateTime.MinValue;
@@ -48,26 +68,22 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
             var stale = !exists
                 || DateTime.UtcNow - built > (past ? TimeSpan.FromDays(1) : TimeSpan.FromHours(3))
                 || (System.IO.File.Exists(history) && System.IO.File.GetLastWriteTimeUtc(history) > built);
-            if (stale)
+            if (!stale)
             {
-                var run = CalendarBuilds.GetOrAdd(month, m => Task.Run(async () =>
-                {
-                    try
-                    {
-                        return await RunM2Script(new[] { "maintenance/trakt_sync.py", "--calendar", m }, TimeSpan.FromSeconds(120), "Calendar " + m).ConfigureAwait(false);
-                    }
-                    finally
-                    {
-                        CalendarBuilds.TryRemove(m, out _);
-                    }
-                }));
-                if (!exists)
-                {
-                    await run.ConfigureAwait(false);
-                }
+                return null;
             }
 
-            return System.IO.File.Exists(path) ? PhysicalFile(path, MediaTypeNames.Application.Json) : NotFound();
+            return CalendarBuilds.GetOrAdd(month, m => Task.Run(async () =>
+            {
+                try
+                {
+                    return await RunM2Script(new[] { "maintenance/trakt_sync.py", "--calendar", m }, TimeSpan.FromSeconds(240), "Calendar " + m).ConfigureAwait(false);
+                }
+                finally
+                {
+                    CalendarBuilds.TryRemove(m, out _);
+                }
+            }));
         }
     }
 }
