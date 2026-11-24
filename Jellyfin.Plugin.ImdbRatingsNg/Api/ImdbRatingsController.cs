@@ -285,9 +285,9 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
             bool saved = System.IO.File.Exists(path);
             // a copy saved before profiles were added (no "profile") is fetched again once
             var savedText = saved ? await System.IO.File.ReadAllTextAsync(path).ConfigureAwait(false) : null;
-            // a copy saved before profiles (no "profile") or before IMDb ids and 🍅 ("ids": 3) is fetched again once
+            // a copy saved before profiles (no "profile") or before IMDb ids and 🍅 ("ids": 4) is fetched again once
             if (savedText != null && DateTime.UtcNow - System.IO.File.GetLastWriteTimeUtc(path) < PersonCacheTime
-                && savedText.Contains("\"profile\"", StringComparison.Ordinal) && savedText.Contains("\"ids\":3", StringComparison.Ordinal))
+                && savedText.Contains("\"profile\"", StringComparison.Ordinal) && savedText.Contains("\"ids\":4", StringComparison.Ordinal))
             {
                 return Content(await WithImdbRatings(savedText).ConfigureAwait(false), MediaTypeNames.Application.Json);
             }
@@ -1513,7 +1513,8 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
 
                     if (sc.Pop is int pop)
                     {
-                        o["pop"] = pop;
+                        // "pc": 🍿 audience score ("pop" is TMDB's popularity)
+                        o["pc"] = pop;
                     }
                 }
             }
@@ -1571,7 +1572,7 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
             var result = new JsonObject
             {
                 ["at"] = DateTime.UtcNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
-                ["ids"] = 3,
+                ["ids"] = 4,
                 ["cast"] = cast,
                 ["crew"] = crewArray,
             };
