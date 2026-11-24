@@ -36,6 +36,7 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
         private static readonly BaseItemKind[] VotedKinds = { BaseItemKind.Movie, BaseItemKind.Series, BaseItemKind.Episode };
         private static readonly TimeSpan VotesCacheTime = TimeSpan.FromHours(1);
         private static readonly object VotesLock = new object();
+        private static readonly SemaphoreSlim ScoresSlot = new SemaphoreSlim(1, 1);
         private static readonly HttpClient TmdbHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
         private static readonly TimeSpan PersonCacheTime = TimeSpan.FromDays(30);
         private static readonly TimeSpan TitleCacheTime = TimeSpan.FromHours(12);
@@ -284,9 +285,9 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
             bool saved = System.IO.File.Exists(path);
             // a copy saved before profiles were added (no "profile") is fetched again once
             var savedText = saved ? await System.IO.File.ReadAllTextAsync(path).ConfigureAwait(false) : null;
-            // a copy saved before profiles (no "profile") or before IMDb ids ("ids": 2) is fetched again once
+            // a copy saved before profiles (no "profile") or before IMDb ids and 🍅 ("ids": 3) is fetched again once
             if (savedText != null && DateTime.UtcNow - System.IO.File.GetLastWriteTimeUtc(path) < PersonCacheTime
-                && savedText.Contains("\"profile\"", StringComparison.Ordinal) && savedText.Contains("\"ids\":2", StringComparison.Ordinal))
+                && savedText.Contains("\"profile\"", StringComparison.Ordinal) && savedText.Contains("\"ids\":3", StringComparison.Ordinal))
             {
                 return Content(await WithImdbRatings(savedText).ConfigureAwait(false), MediaTypeNames.Application.Json);
             }
@@ -311,8 +312,10 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
                 }
 
                 var raw = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                // 🍅 and 🍿 for the whole career from MDBList: one request per 200 films / series
+                var scores = await MdbListScores(folder, raw).ConfigureAwait(false);
                 var trakt = await traktTask.ConfigureAwait(false);
-                var trimmed = TrimCredits(raw, trakt.Height, trakt.Imdb);
+                var trimmed = TrimCredits(raw, trakt.Height, trakt.Imdb, scores);
                 Directory.CreateDirectory(dir);
                 var tmp = path + ".tmp";
                 await System.IO.File.WriteAllTextAsync(tmp, trimmed).ConfigureAwait(false);
@@ -1355,7 +1358,143 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
             }
         }
 
-        private static string TrimCredits(string raw, int? heightCm = null, Dictionary<string, int>? imdb = null)
+        /// <summary>
+        /// 🍅 (critics) and 🍿 (audience) for every film and series of a career, from MDBList in batches (about one
+        /// request per 200 titles; the free plan allows 1,000 a day). Each score found is also noted in
+        /// mdblist-scores.jsonl, so the server's poster facts show it everywhere else too.
+        /// </summary>
+        private async Task<Dictionary<string, (int? Rt, int? Pop)>> MdbListScores(string folder, string raw)
+        {
+            var result = new Dictionary<string, (int? Rt, int? Pop)>(StringComparer.Ordinal);
+            try
+            {
+                var keyFile = Path.Combine(folder, "mdblist.key");
+                if (!System.IO.File.Exists(keyFile))
+                {
+                    return result;
+                }
+
+                var key = (await System.IO.File.ReadAllTextAsync(keyFile).ConfigureAwait(false)).Trim();
+                var person = JsonNode.Parse(raw);
+                var root = person?["combined_credits"] ?? person;
+                var movies = new HashSet<int>();
+                var shows = new HashSet<int>();
+                foreach (var part in new[] { "cast", "crew" })
+                {
+                    foreach (var c in root?[part]?.AsArray() ?? new JsonArray())
+                    {
+                        var id = c?["id"]?.GetValue<int>() ?? 0;
+                        if (id == 0 || c?["poster_path"] is null)
+                        {
+                            continue;
+                        }
+
+                        if (string.Equals(c["media_type"]?.GetValue<string>(), "tv", StringComparison.Ordinal))
+                        {
+                            shows.Add(id);
+                        }
+                        else
+                        {
+                            movies.Add(id);
+                        }
+                    }
+                }
+
+                var found = new List<string>();
+                async Task Batch(string kind, List<int> ids, string prefix)
+                {
+                    var body = new JsonObject { ["ids"] = new JsonArray(ids.Select(i => (JsonNode)i).ToArray()) };
+                    using var req = new HttpRequestMessage(HttpMethod.Post, "https://api.mdblist.com/tmdb/" + kind + "?apikey=" + Uri.EscapeDataString(key))
+                    {
+                        Content = new StringContent(body.ToJsonString(), System.Text.Encoding.UTF8, "application/json"),
+                    };
+                    req.Headers.TryAddWithoutValidation("User-Agent", "NoBarsMediaServer/1.0");
+                    using var res = await TmdbHttp.SendAsync(req).ConfigureAwait(false);
+                    if (!res.IsSuccessStatusCode || JsonNode.Parse(await res.Content.ReadAsStringAsync().ConfigureAwait(false)) is not JsonArray list)
+                    {
+                        return;
+                    }
+
+                    foreach (var m in list)
+                    {
+                        var tmdb = m?["ids"]?["tmdb"];
+                        if (tmdb is null || tmdb.GetValueKind() != JsonValueKind.Number)
+                        {
+                            continue;
+                        }
+
+                        int? rt = null;
+                        int? pop = null;
+                        foreach (var r in m?["ratings"]?.AsArray() ?? new JsonArray())
+                        {
+                            var v = r?["value"];
+                            if (v is null || v.GetValueKind() != JsonValueKind.Number)
+                            {
+                                continue;
+                            }
+
+                            var source = r?["source"]?.GetValue<string>();
+                            if (string.Equals(source, "tomatoes", StringComparison.Ordinal))
+                            {
+                                rt = (int)Math.Round(v.GetValue<double>());
+                            }
+                            else if (string.Equals(source, "popcorn", StringComparison.Ordinal))
+                            {
+                                pop = (int)Math.Round(v.GetValue<double>());
+                            }
+                        }
+
+                        if (rt == null && pop == null)
+                        {
+                            continue;
+                        }
+
+                        lock (result)
+                        {
+                            result[prefix + tmdb.GetValue<int>().ToString(CultureInfo.InvariantCulture)] = (rt, pop);
+                            var imdbId = m?["ids"]?["imdb"]?.GetValue<string>();
+                            if (!string.IsNullOrEmpty(imdbId))
+                            {
+                                found.Add(new JsonObject { ["imdb"] = imdbId, ["rt"] = rt, ["pop"] = pop }.ToJsonString());
+                            }
+                        }
+                    }
+                }
+
+                var tasks = new List<Task>();
+                foreach (var chunk in movies.Chunk(200))
+                {
+                    tasks.Add(Batch("movie", chunk.ToList(), "movie:"));
+                }
+
+                foreach (var chunk in shows.Chunk(200))
+                {
+                    tasks.Add(Batch("show", chunk.ToList(), "tv:"));
+                }
+
+                await Task.WhenAll(tasks).ConfigureAwait(false);
+                if (found.Count > 0)
+                {
+                    await ScoresSlot.WaitAsync().ConfigureAwait(false);
+                    try
+                    {
+                        await System.IO.File.AppendAllLinesAsync(Path.Combine(folder, "mdblist-scores.jsonl"), found).ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        ScoresSlot.Release();
+                    }
+                }
+            }
+            catch (Exception ex) when (ex is HttpRequestException || ex is TaskCanceledException || ex is JsonException || ex is IOException || ex is InvalidOperationException)
+            {
+                _logger.LogDebug(ex, "MDBList scores unavailable");
+            }
+
+            return result;
+        }
+
+        private static string TrimCredits(string raw, int? heightCm = null, Dictionary<string, int>? imdb = null, Dictionary<string, (int? Rt, int? Pop)>? scores = null)
         {
             void Imdb(JsonObject o)
             {
@@ -1363,6 +1502,19 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
                 if (imdb != null && imdb.TryGetValue(k, out var n))
                 {
                     o["imdb"] = n;
+                }
+
+                if (scores != null && scores.TryGetValue(k, out var sc))
+                {
+                    if (sc.Rt is int rt)
+                    {
+                        o["rt"] = rt;
+                    }
+
+                    if (sc.Pop is int pop)
+                    {
+                        o["pop"] = pop;
+                    }
                 }
             }
 
@@ -1419,7 +1571,7 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
             var result = new JsonObject
             {
                 ["at"] = DateTime.UtcNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
-                ["ids"] = 2,
+                ["ids"] = 3,
                 ["cast"] = cast,
                 ["crew"] = crewArray,
             };
