@@ -283,16 +283,18 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
             var path = Path.Combine(dir, tmdbId + ".json");
             bool saved = System.IO.File.Exists(path);
             // a copy saved before profiles were added (no "profile") is fetched again once
-            if (saved && DateTime.UtcNow - System.IO.File.GetLastWriteTimeUtc(path) < PersonCacheTime
-                && (await System.IO.File.ReadAllTextAsync(path).ConfigureAwait(false)).Contains("\"profile\"", StringComparison.Ordinal))
+            var savedText = saved ? await System.IO.File.ReadAllTextAsync(path).ConfigureAwait(false) : null;
+            // a copy saved before profiles (no "profile") or before IMDb ids ("ids": 2) is fetched again once
+            if (savedText != null && DateTime.UtcNow - System.IO.File.GetLastWriteTimeUtc(path) < PersonCacheTime
+                && savedText.Contains("\"profile\"", StringComparison.Ordinal) && savedText.Contains("\"ids\":2", StringComparison.Ordinal))
             {
-                return PhysicalFile(path, MediaTypeNames.Application.Json);
+                return Content(await WithImdbRatings(savedText).ConfigureAwait(false), MediaTypeNames.Application.Json);
             }
 
             var keyFile = Path.Combine(folder, "tmdb.key");
             if (!System.IO.File.Exists(keyFile))
             {
-                return saved ? PhysicalFile(path, MediaTypeNames.Application.Json) : NotFound();
+                return savedText != null ? Content(await WithImdbRatings(savedText).ConfigureAwait(false), MediaTypeNames.Application.Json) : NotFound();
             }
 
             try
@@ -300,20 +302,22 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
                 var key = (await System.IO.File.ReadAllTextAsync(keyFile).ConfigureAwait(false)).Trim();
                 // one TMDB request: the profile, the whole career and the photos; height from Trakt alongside
                 var url = new Uri("https://api.themoviedb.org/3/person/" + tmdbId + "?append_to_response=combined_credits,images&language=en-US&api_key=" + Uri.EscapeDataString(key));
-                var heightTask = TraktHeight(folder, tmdbId);
+                // Trakt alongside: height, and the IMDb id of every title in the career (kept with the copy)
+                var traktTask = TraktPerson(folder, tmdbId);
                 using var response = await TmdbHttp.GetAsync(url).ConfigureAwait(false);
                 if (!response.IsSuccessStatusCode)
                 {
-                    return saved ? PhysicalFile(path, MediaTypeNames.Application.Json) : NotFound();
+                    return savedText != null ? Content(await WithImdbRatings(savedText).ConfigureAwait(false), MediaTypeNames.Application.Json) : NotFound();
                 }
 
                 var raw = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-                var trimmed = TrimCredits(raw, await heightTask.ConfigureAwait(false));
+                var trakt = await traktTask.ConfigureAwait(false);
+                var trimmed = TrimCredits(raw, trakt.Height, trakt.Imdb);
                 Directory.CreateDirectory(dir);
                 var tmp = path + ".tmp";
                 await System.IO.File.WriteAllTextAsync(tmp, trimmed).ConfigureAwait(false);
                 System.IO.File.Move(tmp, path, true);
-                return Content(trimmed, MediaTypeNames.Application.Json);
+                return Content(await WithImdbRatings(trimmed).ConfigureAwait(false), MediaTypeNames.Application.Json);
             }
             catch (HttpRequestException ex)
             {
@@ -332,7 +336,7 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
                 _logger.LogWarning(ex, "Person credits for {Id} not saved", tmdbId);
             }
 
-            return saved ? PhysicalFile(path, MediaTypeNames.Application.Json) : NotFound();
+            return savedText != null ? Content(await WithImdbRatings(savedText).ConfigureAwait(false), MediaTypeNames.Application.Json) : NotFound();
         }
 
         /// <summary>
@@ -1195,14 +1199,15 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
         /// A person's height in centimetres from Trakt (TMDB has none), found by their TMDB id. Needs the Trakt app's
         /// public client id in trakt.client in this plugin's data folder (written by the M2 server). Null if unknown.
         /// </summary>
-        private async Task<int?> TraktHeight(string folder, string tmdbId)
+        private async Task<(int? Height, Dictionary<string, int> Imdb)> TraktPerson(string folder, string tmdbId)
         {
+            var imdb = new Dictionary<string, int>(StringComparer.Ordinal);
             try
             {
                 var idFile = Path.Combine(folder, "trakt.client");
                 if (!System.IO.File.Exists(idFile))
                 {
-                    return null;
+                    return (null, imdb);
                 }
 
                 var client = (await System.IO.File.ReadAllTextAsync(idFile).ConfigureAwait(false)).Trim();
@@ -1220,42 +1225,147 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
                 var slug = found?.AsArray().Count > 0 ? found[0]?["person"]?["ids"]?["slug"]?.GetValue<string>() : null;
                 if (string.IsNullOrEmpty(slug))
                 {
-                    return null;
+                    return (null, imdb);
                 }
 
-                var person = await Get("https://api.trakt.tv/people/" + Uri.EscapeDataString(slug) + "?extended=full").ConfigureAwait(false);
-                var h = person?["height"];
+                var personTask = Get("https://api.trakt.tv/people/" + Uri.EscapeDataString(slug) + "?extended=full");
+                var moviesTask = Get("https://api.trakt.tv/people/" + Uri.EscapeDataString(slug) + "/movies");
+                var showsTask = Get("https://api.trakt.tv/people/" + Uri.EscapeDataString(slug) + "/shows");
+                await Task.WhenAll(personTask, moviesTask, showsTask).ConfigureAwait(false);
+
+                // every title of the career (acting and behind the camera): TMDB id -> IMDb id
+                void Collect(JsonNode? credits, string field, string prefix)
+                {
+                    void One(JsonNode? entry)
+                    {
+                        var ids = entry?[field]?["ids"];
+                        var t = ids?["tmdb"];
+                        var i = ids?["imdb"]?.GetValue<string>();
+                        if (t != null && t.GetValueKind() == JsonValueKind.Number && i != null && i.StartsWith("tt", StringComparison.Ordinal)
+                            && int.TryParse(i.AsSpan(2), NumberStyles.Integer, CultureInfo.InvariantCulture, out var n))
+                        {
+                            imdb[prefix + t.GetValue<int>().ToString(CultureInfo.InvariantCulture)] = n;
+                        }
+                    }
+
+                    foreach (var c in credits?["cast"]?.AsArray() ?? new JsonArray())
+                    {
+                        One(c);
+                    }
+
+                    if (credits?["crew"] is JsonObject crew)
+                    {
+                        foreach (var dept in crew)
+                        {
+                            foreach (var c in dept.Value?.AsArray() ?? new JsonArray())
+                            {
+                                One(c);
+                            }
+                        }
+                    }
+                }
+
+                Collect(await moviesTask.ConfigureAwait(false), "movie", "movie:");
+                Collect(await showsTask.ConfigureAwait(false), "show", "tv:");
+
+                var h = (await personTask.ConfigureAwait(false))?["height"];
                 if (h is null)
                 {
-                    return null;
+                    return (null, imdb);
                 }
 
                 var value = h.GetValueKind() == JsonValueKind.Number ? h.GetValue<double>() : double.TryParse(h.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : 0;
                 var cm = value < 3 ? value * 100 : value; // metres or centimetres
-                return cm >= 50 && cm <= 260 ? (int)Math.Round(cm) : null;
+                return (cm >= 50 && cm <= 260 ? (int)Math.Round(cm) : null, imdb);
             }
             catch (HttpRequestException ex)
             {
-                _logger.LogDebug(ex, "Trakt height for {Id} unavailable", tmdbId);
+                _logger.LogDebug(ex, "Trakt person for {Id} unavailable", tmdbId);
             }
             catch (TaskCanceledException ex)
             {
-                _logger.LogDebug(ex, "Trakt height for {Id} timed out", tmdbId);
+                _logger.LogDebug(ex, "Trakt person for {Id} timed out", tmdbId);
             }
             catch (JsonException ex)
             {
-                _logger.LogDebug(ex, "Trakt height for {Id} unreadable", tmdbId);
+                _logger.LogDebug(ex, "Trakt person for {Id} unreadable", tmdbId);
             }
             catch (InvalidOperationException ex)
             {
-                _logger.LogDebug(ex, "Trakt height for {Id} unexpected", tmdbId);
+                _logger.LogDebug(ex, "Trakt person for {Id} unexpected", tmdbId);
             }
 
-            return null;
+            return (null, imdb);
         }
 
-        private static string TrimCredits(string raw, int? heightCm = null)
+        /// <summary>
+        /// Adds today's IMDb rating and votes ("ir", "iv") to every title of a career that has an IMDb id, from the
+        /// plugin's own daily IMDb database (local, about a millisecond for a whole career).
+        /// </summary>
+        private async Task<string> WithImdbRatings(string json)
         {
+            try
+            {
+                if (JsonNode.Parse(json) is not JsonObject doc)
+                {
+                    return json;
+                }
+
+                var all = new List<JsonObject>();
+                foreach (var part in new[] { "cast", "crew" })
+                {
+                    foreach (var n in doc[part]?.AsArray() ?? new JsonArray())
+                    {
+                        if (n is JsonObject o && o["imdb"] is JsonValue)
+                        {
+                            all.Add(o);
+                        }
+                    }
+                }
+
+                if (all.Count == 0)
+                {
+                    return json;
+                }
+
+                var requests = new List<VoteRequest>();
+                foreach (var o in all)
+                {
+                    var id = o["imdb"]!.GetValue<int>();
+                    requests.Add(new VoteRequest { Key = id.ToString(CultureInfo.InvariantCulture), ImdbId = id });
+                }
+
+                using var manager = new IMDbRatingsManager(_logger);
+                var votes = await manager.GetVotesAsync(requests).ConfigureAwait(false);
+                foreach (var o in all)
+                {
+                    if (votes.TryGetValue(o["imdb"]!.GetValue<int>().ToString(CultureInfo.InvariantCulture), out var v))
+                    {
+                        o["ir"] = Math.Round(v.Rating, 1);
+                        o["iv"] = v.Votes;
+                    }
+                }
+
+                return doc.ToJsonString();
+            }
+            catch (JsonException ex)
+            {
+                _logger.LogWarning(ex, "Person ratings not added");
+                return json;
+            }
+        }
+
+        private static string TrimCredits(string raw, int? heightCm = null, Dictionary<string, int>? imdb = null)
+        {
+            void Imdb(JsonObject o)
+            {
+                var k = (o["tv"]?.GetValue<bool>() == true ? "tv:" : "movie:") + o["id"]?.ToString();
+                if (imdb != null && imdb.TryGetValue(k, out var n))
+                {
+                    o["imdb"] = n;
+                }
+            }
+
             var person = JsonNode.Parse(raw) ?? new JsonObject();
             // the career sits under "combined_credits" when the profile is asked for too
             var root = person["combined_credits"] ?? person;
@@ -1268,6 +1378,7 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
                 }
 
                 var o = Entry(c);
+                Imdb(o);
                 o["role"] = c["character"]?.GetValue<string>() ?? string.Empty;
                 if (c["episode_count"] is JsonNode n)
                 {
@@ -1294,6 +1405,7 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
                 }
 
                 var o = Entry(c);
+                Imdb(o);
                 o["role"] = job;
                 crew[key] = o;
             }
@@ -1307,6 +1419,7 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
             var result = new JsonObject
             {
                 ["at"] = DateTime.UtcNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                ["ids"] = 2,
                 ["cast"] = cast,
                 ["crew"] = crewArray,
             };
