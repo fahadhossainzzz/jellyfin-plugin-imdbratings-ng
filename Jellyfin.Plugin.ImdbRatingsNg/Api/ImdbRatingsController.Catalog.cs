@@ -31,6 +31,7 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
     public partial class ImdbRatingsController
     {
         private static readonly object SlimLock = new object();
+        private static readonly string[] TraktSyncArgs = { "maintenance/trakt_sync.py" };
         private static int _watchlistSyncRunning;
 
         /// <summary>
@@ -149,7 +150,7 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
                     try
                     {
                         await Task.Delay(1500).ConfigureAwait(false); // the TV's save lands first
-                        await RunM2Script(new[] { "maintenance/trakt_sync.py" }, TimeSpan.FromSeconds(120), "Trakt sync").ConfigureAwait(false);
+                        await RunM2Script(TraktSyncArgs, TimeSpan.FromSeconds(120), "Trakt sync").ConfigureAwait(false);
                     }
                     finally
                     {
