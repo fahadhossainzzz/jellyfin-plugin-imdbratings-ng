@@ -85,15 +85,15 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
 
             var key = day ?? "recent";
             var args = day == null ? new[] { "daily/server_report.py" } : new[] { "daily/server_report.py", "--day", day };
-            var run = ReportBuilds.GetOrAdd(key, _ => Task.Run(async () =>
+            var run = ReportBuilds.GetOrAdd(key, k => Task.Run(async () =>
             {
                 try
                 {
-                    return await RunM2Script(args, TimeSpan.FromSeconds(90), "Report " + key).ConfigureAwait(false);
+                    return await RunM2Script(args, TimeSpan.FromSeconds(90), "Report " + k).ConfigureAwait(false);
                 }
                 finally
                 {
-                    ReportBuilds.TryRemove(key, out _);
+                    ReportBuilds.TryRemove(k, out _);
                 }
             }));
             await run.ConfigureAwait(false);
