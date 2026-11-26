@@ -130,9 +130,26 @@
                     if (notes.length) h += '<details><summary>' + notes.length + ' note' + (notes.length > 1 ? 's' : '') + ' (nothing to do)</summary><ul class="nb-checks">' + notes.map(function (c) { return '<li><span class="dot"></span><b>' + esc(c.area) + ':</b> ' + esc(c.text) + '</li>'; }).join('') + '</ul></details>';
                     if (r.collector_errors && r.collector_errors.length) h += '<details><summary>Report problems</summary><pre>' + esc(r.collector_errors.join('\n')) + '</pre></details>';
                     h += '</div><div class="nb-grid">';
-                    h += importsCard(r.imports) + playbackCard(r.playback, r.jellyfin) + disksCard(r.disks, r.partial) + subtitlesCard(r.subtitles) +
+                    h += downloadsCard(r.downloads) + importsCard(r.imports) + playbackCard(r.playback, r.jellyfin) + disksCard(r.disks, r.partial) + subtitlesCard(r.subtitles) +
                         dailyCard(r.daily_run) + jobsCard(r) + jellyfinCard(r.jellyfin) + traktCard(r.trakt);
                     body.innerHTML = h + '</div>';
+                }
+
+                function downloadsCard(d) {
+                    if (!d || Array.isArray(d) || !(d.items || []).length) return '';
+                    var ok = d.items.filter(function (i) { return i.result === 'imported'; });
+                    var sum = d.items.length + ' download' + (d.items.length > 1 ? 's' : '') + ' from Telegram' +
+                        (d.torrent_mb_s != null ? ' · torrents ' + d.torrent_mb_s + ' MB/s average' : '') +
+                        (d.link_mb_s != null ? ' · direct links ' + d.link_mb_s + ' MB/s average' : '');
+                    var rows = d.items.map(function (i) {
+                        var res = i.result === 'imported' ? '<span class="good">✓</span> ' + esc((i.drives || []).join(', ')) :
+                            i.result === 'fdm' ? 'handed to FDM' : '<span class="bad">' + esc(i.result) + '</span>' + (i.error ? ' <span class="muted">' + esc(i.error) + '</span>' : '');
+                        var src = i.kind === 'link' ? 'link' + (i.ranges === false ? ' (1 conn.)' : '') : 'torrent' + (i.seeders != null ? ' · ' + i.seeders + ' sharing' : '');
+                        return [esc(i.time), '<b>' + esc(i.title) + '</b>' + (i.files > 1 ? ' <span class="muted">(' + i.files + ' files)</span>' : '') + '<br><span class="muted">' + esc(src) + (i.host ? ' · ' + esc(i.host) : '') + '</span>',
+                            esc(i.gb), i.download_min ? mins(i.download_min) : '', i.avg_mb_s ? i.avg_mb_s + ' MB/s' : '', i.peak_mb_s ? i.peak_mb_s + ' MB/s' : '', i.total_min ? mins(i.total_min) : '', res];
+                    });
+                    return card('Downloads', 'from the Telegram bot', '<p class="nb-sum">' + esc(sum) + '</p>' +
+                        table(['Time', 'Title', '#GB', '#Download', '#Average', '#Peak', '#Link → library', 'Result'], rows), true);
                 }
 
                 function importsCard(x) {
@@ -250,12 +267,14 @@
                     return card('Trakt', '', h);
                 }
 
-                function chart(days, key, label, fmt) {
+                function chart(days, key, label, fmt, mean) {
                     var max = Math.max.apply(null, days.map(function (d) { return d[key] || 0; }).concat([1]));
                     var bars = days.map(function (d) { var v = d[key] || 0; return '<div class="' + (v ? '' : 'zero') + '" style="height:' + Math.max(1, Math.round(v * 100 / max)) + '%" title="' + esc(nice(d.day) + ': ' + (fmt ? fmt(v) : v)) + '" data-day="' + esc(d.day) + '"></div>'; }).join('');
                     var step = Math.ceil(days.length / 10);
                     var xs = days.map(function (d, i) { return '<span>' + (i % step === 0 ? esc(d.day.slice(8)) : '') + '</span>'; }).join('');
                     var total = days.reduce(function (a, d) { return a + (d[key] || 0); }, 0);
+                    var have = days.filter(function (d) { return d[key] != null; }).length;
+                    if (mean) return card(label, have ? 'average ' + Math.round(total / have * 10) / 10 : 'no downloads yet', '<div class="chart">' + bars + '</div><div class="chart-x">' + xs + '</div>');
                     return card(label, 'total ' + (fmt ? fmt(total) : Math.round(total * 10) / 10), '<div class="chart">' + bars + '</div><div class="chart-x">' + xs + '</div>');
                 }
 
@@ -268,7 +287,7 @@
                     days.forEach(function (d) { counts[d.verdict] = (counts[d.verdict] || 0) + 1; });
                     var h = '<div class="nb-verdict ' + (counts.fail ? 'fail' : counts.look ? 'look' : 'ok') + '"><b>' + days.length + ' days</b>: ' +
                         '<span class="dot ok"></span>' + counts.ok + ' all good &nbsp; <span class="dot look"></span>' + counts.look + ' needed a look &nbsp; <span class="dot fail"></span>' + counts.fail + ' with a failure</div>';
-                    h += '<div class="nb-grid">' + chart(days, 'gb', 'Imported (GB)') + chart(days, 'watched_min', 'Watched', mins) + chart(days, 'stalls', 'Playback stalls') + chart(days, 'errors', 'Jellyfin error lines');
+                    h += '<div class="nb-grid">' + chart(days, 'gb', 'Imported (GB)') + chart(days, 'watched_min', 'Watched', mins) + chart(days, 'stalls', 'Playback stalls') + chart(days, 'errors', 'Jellyfin error lines') + chart(days, 'torrent_mb_s', 'Torrent speed (MB/s)', null, true) + chart(days, 'link_mb_s', 'Direct-link speed (MB/s)', null, true);
                     var drives = {};
                     days.forEach(function (d) { Object.keys(d.room || {}).forEach(function (k) { drives[k] = true; }); });
                     var dn = Object.keys(drives).sort();
