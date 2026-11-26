@@ -245,7 +245,8 @@
                     if (t.library) h += '<p class="muted">Library on Trakt: ' + esc(t.library.text) + '</p>';
                     var rows = t.watchlist_syncs.map(function (s) { return [esc(s.time), esc(s.text)]; }).concat(t.marked.map(function (m) { return [esc(m.time), 'marked ' + esc(m.what) + ' (' + esc(m.when) + ')' + (m.ok ? '' : ' <span class="bad">failed</span>')]; }));
                     if (rows.length) h += '<details><summary>Changes</summary>' + table(['Time', 'What'], rows) + '</details>';
-                    if (t.problems.length) h += '<pre>' + esc(t.problems.join('\n')) + '</pre>';
+                    var pg = t.problem_groups || t.problems.map(function (p) { return { first: p.slice(0, 5), last: p.slice(0, 5), count: 1, text: p.slice(6) }; });
+                    if (pg.length) h += '<details><summary>Problems (' + pg.length + ')</summary>' + table(['When', '#×', 'What'], pg.map(function (g) { return [esc(g.first + (g.count > 1 ? '–' + g.last : '')), esc(g.count), esc(g.text)]; })) + '</details>';
                     return card('Trakt', '', h);
                 }
 
