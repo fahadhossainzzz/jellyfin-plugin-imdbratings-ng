@@ -181,12 +181,23 @@
                     var stalls = pb.reduce(function (a, p) { return a + (p.stalls || 0); }, 0);
                     var sum = pb.length ? pb.length + ' viewing' + (pb.length > 1 ? 's' : '') + ' · ' + mins(total) + ' · ' + (stalls ? '<span class="warn">' + stalls + ' stall' + (stalls > 1 ? 's' : '') + '</span>' : '<span class="good">no stalls</span>') : (others.length ? '' : 'Nothing played.');
                     var rows = pb.map(function (p) {
-                        var net = (p.reconnects ? p.reconnects + ' reconnect' + (p.reconnects > 1 ? 's' : '') : '') + (p.mbps_low != null ? (p.reconnects ? ' · ' : '') + 'low ' + p.mbps_low + ' Mbps' : '');
-                        return [esc(p.start) + '–' + esc(p.end), '<b>' + esc(p.title) + '</b><br><span class="muted">' + esc(p.device) + ' · ' + esc(p.file) + '</span>',
+                        // speeds in MB/s (older reports in Mbps are converted: 8 Mbps = 1 MB/s)
+                        var low = p.mbs_low != null ? p.mbs_low : (p.mbps_low != null ? Math.round(p.mbps_low / 8 * 10) / 10 : null);
+                        var net = [p.reconnects ? p.reconnects + ' reconnect' + (p.reconnects > 1 ? 's' : '') : '', low != null ? 'low ' + low + ' MB/s' : '',
+                            p.deco_moves ? '<span class="warn">Deco moved ' + p.deco_moves + '×</span>' : ''].filter(Boolean).join(' · ');
+                        var notes = [];
+                        if (p.sub_delay) notes.push('<span class="warn">subtitles ' + esc(p.sub_delay) + '</span>');
+                        if (p.display && !p.display_even) notes.push('<span class="warn">' + esc(p.screen_hz) + ' Hz screen for ' + esc(p.film_fps) + ' fps</span>');
+                        else if (p.display) notes.push(esc(p.screen_hz) + ' Hz ✓');
+                        if (p.picture && p.picture.indexOf('not used') >= 0) notes.push('<span class="warn">' + esc(p.picture) + '</span>');
+                        if (p.heat && !/^(normal|warm)/.test(p.heat)) notes.push('<span class="bad">' + esc(p.heat) + '</span>');
+                        (p.wait_notes || []).forEach(function (n) { notes.push('<span class="muted">' + esc(n) + '</span>'); });
+                        var mem = p.app_mem_start != null ? p.app_mem_start + '→' + p.app_mem_pct + '→' + p.app_mem_end + '%' : (p.app_mem_pct != null ? p.app_mem_pct + '%' : '');
+                        return [esc(p.start) + '–' + esc(p.end), '<b>' + esc(p.title) + '</b><br><span class="muted">' + esc(p.device) + ' · ' + esc(p.file) + (p.app ? ' · ' + esc(p.app) : '') + '</span>',
                             esc(p.playing), (p.start_s != null ? p.start_s + ' s' : ''), (p.stalls ? '<span class="bad">' + p.stalls + '</span>' : '0'),
-                            esc(net), (p.dropped ? '<span class="warn">' + p.dropped + '</span>' : '0'), (p.tv_ram_low_mb != null ? p.tv_ram_low_mb + ' MB' : '')];
+                            net, (p.dropped ? '<span class="warn">' + p.dropped + '</span>' : '0'), mem, (p.tv_ram_low_mb != null ? p.tv_ram_low_mb + ' MB' : ''), notes.join('<br>')];
                     });
-                    var h = '<p class="nb-sum">' + sum + '</p>' + table(['Time', 'Title', '#Played', '#Start', '#Stalls', 'Network', '#Dropped', '#TV free RAM'], rows);
+                    var h = '<p class="nb-sum">' + sum + '</p>' + table(['Time', 'Title', '#Played', '#Start', '#Stalls', 'Network', '#Dropped', '#App memory', '#TV free RAM', 'Notes'], rows);
                     if (others.length) h += '<p class="nb-sum" style="margin-top:.7em">Other players (no report):</p>' + table(['Time', 'Title', 'App', '#Stopped at'], others.map(function (s) { return [esc((s.start || '?') + '–' + (s.end || 'now')), esc(s.title), esc(s.client), s.position_min != null ? mins(s.position_min) : '']; }));
                     return card('Playback', '', h, true);
                 }
