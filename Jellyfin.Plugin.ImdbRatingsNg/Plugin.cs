@@ -53,6 +53,16 @@ namespace Jellyfin.Plugin.ImdbRatingsNg
                 {
                     Name = this.Name,
                     EmbeddedResourcePath = string.Format(CultureInfo.InvariantCulture, "{0}.Configuration.configPage.html", GetType().Namespace)
+                },
+                new PluginPageInfo
+                {
+                    // NoBars: what every job on the M2 Mac did, day by day (Api/ImdbRatingsController.Report.cs)
+                    Name = "NoBarsServerReport",
+                    DisplayName = "Server report",
+                    EmbeddedResourcePath = string.Format(CultureInfo.InvariantCulture, "{0}.Configuration.reportPage.html", GetType().Namespace),
+                    EnableInMainMenu = true,
+                    MenuSection = "server",
+                    MenuIcon = "assessment"
                 }
             };
         }

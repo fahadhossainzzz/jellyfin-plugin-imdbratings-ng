@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Server report</title>
+</head>
+<body>
+    <div id="NbServerReportPage" data-role="page" class="page type-interior pluginConfigurationPage" data-require="emby-button">
+        <div data-role="content">
+            <div class="content-primary">
+                <style>
+                    #NbServerReportPage { --nb-ok: #3fb950; --nb-look: #d29922; --nb-fail: #f85149; --nb-info: #8b949e; --nb-line: rgba(255,255,255,.09); --nb-card: rgba(120,120,120,.10); --nb-dim: rgba(255,255,255,.62); }
+                    #NbServerReportPage .nb-head { display:flex; flex-wrap:wrap; align-items:center; gap:.6em; margin:.4em 0 1.1em; }
+                    #NbServerReportPage .nb-head h2 { margin:0 1em 0 0; font-weight:600; }
+                    #NbServerReportPage .nb-nav { display:flex; align-items:center; gap:.3em; }
+                    #NbServerReportPage .nb-btn { background:var(--nb-card); border:1px solid var(--nb-line); color:inherit; border-radius:6px; padding:.42em .8em; cursor:pointer; font:inherit; }
+                    #NbServerReportPage .nb-btn:hover { border-color:rgba(255,255,255,.3); }
+                    #NbServerReportPage .nb-btn.on { background:#00a4dc; border-color:#00a4dc; color:#fff; }
+                    #NbServerReportPage .nb-btn:disabled { opacity:.35; cursor:default; }
+                    #NbServerReportPage .nb-date { min-width:9.5em; text-align:center; font-weight:600; }
+                    #NbServerReportPage .nb-built { color:var(--nb-dim); font-size:.85em; margin-left:auto; }
+                    #NbServerReportPage .nb-verdict { border-radius:8px; padding:1em 1.2em; margin-bottom:1em; border-left:5px solid var(--nb-info); background:var(--nb-card); }
+                    #NbServerReportPage .nb-verdict.ok { border-color:var(--nb-ok); } #NbServerReportPage .nb-verdict.look { border-color:var(--nb-look); } #NbServerReportPage .nb-verdict.fail { border-color:var(--nb-fail); }
+                    #NbServerReportPage .nb-verdict b { font-size:1.15em; }
+                    #NbServerReportPage .nb-checks { margin:.6em 0 0; padding:0; list-style:none; }
+                    #NbServerReportPage .nb-checks li { padding:.18em 0; }
+                    #NbServerReportPage .dot { display:inline-block; width:.62em; height:.62em; border-radius:50%; margin-right:.5em; vertical-align:.05em; background:var(--nb-info); }
+                    #NbServerReportPage .dot.ok { background:var(--nb-ok);} #NbServerReportPage .dot.look { background:var(--nb-look);} #NbServerReportPage .dot.fail { background:var(--nb-fail);}
+                    #NbServerReportPage .nb-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,430px),1fr)); gap:1em; }
+                    #NbServerReportPage .nb-card { background:var(--nb-card); border:1px solid var(--nb-line); border-radius:8px; padding:1em 1.1em; min-width:0; }
+                    #NbServerReportPage .nb-card.wide { grid-column:1/-1; }
+                    #NbServerReportPage .nb-card h3 { margin:0 0 .25em; font-size:1.05em; display:flex; gap:.5em; align-items:baseline; }
+                    #NbServerReportPage .nb-card h3 small { color:var(--nb-dim); font-weight:400; font-size:.85em; }
+                    #NbServerReportPage .nb-sum { color:var(--nb-dim); margin:0 0 .6em; }
+                    #NbServerReportPage table { width:100%; border-collapse:collapse; font-size:.9em; }
+                    #NbServerReportPage th { text-align:left; font-weight:500; color:var(--nb-dim); border-bottom:1px solid var(--nb-line); padding:.3em .4em; white-space:nowrap; }
+                    #NbServerReportPage td { border-bottom:1px solid var(--nb-line); padding:.32em .4em; vertical-align:top; }
+                    #NbServerReportPage td.n, #NbServerReportPage th.n { text-align:right; white-space:nowrap; font-variant-numeric:tabular-nums; }
+                    #NbServerReportPage .scroll { overflow-x:auto; }
+                    #NbServerReportPage .muted { color:var(--nb-dim); }
+                    #NbServerReportPage .bad { color:var(--nb-fail); } #NbServerReportPage .warn { color:var(--nb-look); } #NbServerReportPage .good { color:var(--nb-ok); }
+                    #NbServerReportPage details { margin-top:.5em; } #NbServerReportPage summary { cursor:pointer; color:var(--nb-dim); }
+                    #NbServerReportPage .bar { height:.7em; background:rgba(255,255,255,.08); border-radius:4px; overflow:hidden; margin:.25em 0 .15em; }
+                    #NbServerReportPage .bar > i { display:block; height:100%; background:#00a4dc; }
+                    #NbServerReportPage .bar.warn > i { background:var(--nb-look);} #NbServerReportPage .bar.bad > i { background:var(--nb-fail);}
+                    #NbServerReportPage .disk { margin-bottom:.7em; }
+                    #NbServerReportPage .chart { display:flex; align-items:flex-end; gap:3px; height:90px; margin:.4em 0 .2em; }
+                    #NbServerReportPage .chart > div { flex:1; background:#00a4dc; border-radius:2px 2px 0 0; min-height:1px; position:relative; cursor:pointer; }
+                    #NbServerReportPage .chart > div.zero { background:rgba(255,255,255,.12); }
+                    #NbServerReportPage .chart-x { display:flex; gap:3px; font-size:.72em; color:var(--nb-dim); }
+                    #NbServerReportPage .chart-x > span { flex:1; text-align:center; overflow:hidden; white-space:nowrap; }
+                    #NbServerReportPage tr.click { cursor:pointer; } #NbServerReportPage tr.click:hover td { background:rgba(255,255,255,.04); }
+                    #NbServerReportPage .pill { display:inline-block; padding:.05em .5em; border-radius:9px; background:rgba(255,255,255,.08); font-size:.85em; margin:.1em .25em .1em 0; }
+                    #NbServerReportPage .empty { color:var(--nb-dim); font-style:italic; }
+                    #NbServerReportPage pre { white-space:pre-wrap; font-size:.82em; margin:.3em 0; color:var(--nb-dim); }
+                </style>
+
+                <div class="nb-head">
+                    <h2>Server report</h2>
+                    <div class="nb-nav">
+                        <button class="nb-btn" data-nb="prev" title="Day before">&#8249;</button>
+                        <span class="nb-date" id="nbDate">&nbsp;</span>
+                        <button class="nb-btn" data-nb="next" title="Day after">&#8250;</button>
+                    </div>
+                    <button class="nb-btn" data-nb="today">Today</button>
+                    <button class="nb-btn" data-nb="yesterday">Yesterday</button>
+                    <button class="nb-btn" data-nb="7">7 days</button>
+                    <button class="nb-btn" data-nb="30">30 days</button>
+                    <button class="nb-btn" data-nb="refresh" title="Read the logs again">&#8635;</button>
+                    <span class="nb-built" id="nbBuilt"></span>
+                </div>
+                <div id="nbBody"><p class="empty">Loading…</p></div>
+            </div>
+        </div>
+        <script type="text/javascript">
+            (function () {
+                var page = document.querySelector('#NbServerReportPage');
+                var state = { day: null, range: 0, index: null };
+                var body = page.querySelector('#nbBody');
+
+                function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+                function iso(d) { return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2); }
+                function todayIso() { return iso(new Date()); }
+                function shift(day, n) { var p = day.split('-'); var d = new Date(+p[0], +p[1] - 1, +p[2]); d.setDate(d.getDate() + n); return iso(d); }
+                function nice(day) { var p = day.split('-'); var d = new Date(+p[0], +p[1] - 1, +p[2]); return d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' }); }
+                function mins(n) { if (n == null) return ''; n = Math.round(n); return n >= 60 ? Math.floor(n / 60) + ' h ' + (n % 60) + ' min' : n + ' min'; }
+                function secs(n) { if (n == null) return ''; return n >= 60 ? Math.floor(n / 60) + ' min ' + (n % 60) + ' s' : n + ' s'; }
+                function get(path) { return ApiClient.getJSON(ApiClient.getUrl('Plugins/ImdbRatings/' + path)); }
+                function card(title, sub, html, wide) { return '<div class="nb-card' + (wide ? ' wide' : '') + '"><h3>' + esc(title) + (sub ? ' <small>' + esc(sub) + '</small>' : '') + '</h3>' + html + '</div>'; }
+                function table(head, rows) {
+                    if (!rows.length) return '';
+                    return '<div class="scroll"><table><tr>' + head.map(function (h) { var n = h.charAt(0) === '#'; return '<th' + (n ? ' class="n"' : '') + '>' + esc(n ? h.slice(1) : h) + '</th>'; }).join('') + '</tr>' +
+                        rows.map(function (r) { return '<tr>' + r.map(function (c, i) { var n = head[i].charAt(0) === '#'; return '<td' + (n ? ' class="n"' : '') + '>' + c + '</td>'; }).join('') + '</tr>'; }).join('') + '</table></div>';
+                }
+
+                function setButtons() {
+                    page.querySelectorAll('.nb-btn').forEach(function (b) { b.classList.remove('on'); });
+                    var t = todayIso();
+                    if (state.range) { page.querySelector('[data-nb="' + state.range + '"]').classList.add('on'); }
+                    else if (state.day === t) { page.querySelector('[data-nb="today"]').classList.add('on'); }
+                    else if (state.day === shift(t, -1)) { page.querySelector('[data-nb="yesterday"]').classList.add('on'); }
+                    page.querySelector('[data-nb="next"]').disabled = !!state.range || state.day >= t;
+                    page.querySelector('[data-nb="prev"]').disabled = !!state.range;
+                    page.querySelector('#nbDate').textContent = state.range ? ('Last ' + state.range + ' days') : nice(state.day) + (state.day === t ? ' (so far)' : '');
+                }
+
+                function showDay(day, fresh) {
+                    state.day = day; state.range = 0; setButtons();
+                    body.innerHTML = '<p class="empty">Reading the logs…</p>';
+                    get('Report/' + day + (fresh ? '?fresh=true' : '')).then(renderDay, function () {
+                        body.innerHTML = '<p class="empty">No report for ' + esc(nice(day)) + ' (the logs of that day are gone, or the Mac scripts are not reachable).</p>';
+                    });
+                }
+
+                function showRange(n) {
+                    state.range = n; setButtons();
+                    body.innerHTML = '<p class="empty">Reading the logs…</p>';
+                    get('Report/days').then(function (idx) { state.index = idx; renderRange(idx, n); }, function () { body.innerHTML = '<p class="empty">No reports yet.</p>'; });
+                }
+
+                var WORD = { ok: 'All good', look: 'Something needs a look', fail: 'Something failed' };
+
+                function renderDay(r) {
+                    page.querySelector('#nbBuilt').textContent = 'read ' + (r.built || '').slice(11) + (r.partial ? ' · updates every 10 min' : '');
+                    var checks = r.checks || [];
+                    var main = checks.filter(function (c) { return c.level !== 'info'; });
+                    var notes = checks.filter(function (c) { return c.level === 'info'; });
+                    var h = '<div class="nb-verdict ' + esc(r.verdict) + '"><span class="dot ' + esc(r.verdict) + '"></span><b>' + esc(WORD[r.verdict] || r.verdict) + '</b>';
+                    if (main.length) h += '<ul class="nb-checks">' + main.map(function (c) { return '<li><span class="dot ' + esc(c.level) + '"></span><b>' + esc(c.area) + ':</b> ' + esc(c.text) + '</li>'; }).join('') + '</ul>';
+                    if (notes.length) h += '<details><summary>' + notes.length + ' note' + (notes.length > 1 ? 's' : '') + ' (nothing to do)</summary><ul class="nb-checks">' + notes.map(function (c) { return '<li><span class="dot"></span><b>' + esc(c.area) + ':</b> ' + esc(c.text) + '</li>'; }).join('') + '</ul></details>';
+                    if (r.collector_errors && r.collector_errors.length) h += '<details><summary>Report problems</summary><pre>' + esc(r.collector_errors.join('\n')) + '</pre></details>';
+                    h += '</div><div class="nb-grid">';
+                    h += importsCard(r.imports) + playbackCard(r.playback, r.jellyfin) + disksCard(r.disks, r.partial) + subtitlesCard(r.subtitles) +
+                        dailyCard(r.daily_run) + jobsCard(r) + jellyfinCard(r.jellyfin) + traktCard(r.trakt);
+                    body.innerHTML = h + '</div>';
+                }
+
+                function importsCard(x) {
+                    if (!x) return card('Imports', '', '<p class="empty">Not read.</p>');
+                    var drives = Object.keys(x.by_drive || {}).map(function (k) { return k + ' ' + x.by_drive[k] + ' GB'; }).join(' · ');
+                    var sum = x.count ? x.count + ' title' + (x.count > 1 ? 's' : '') + ' · ' + x.gb + ' GB' + (drives ? ' · ' + drives : '') : 'Nothing new.';
+                    var rows = (x.items || []).map(function (i) {
+                        var copy = i.copy_min != null ? (i.copy_min < 1 ? '<1' : Math.round(i.copy_min)) + ' min' + (i.copy_mb_s ? ' · ' + i.copy_mb_s + ' MB/s' : '') : (i.gone ? '<span class="muted">file gone</span>' : '');
+                        var steps = [];
+                        if (i.prepared_from) steps.push('prepared from ' + i.prepared_from);
+                        if (i.copy_from) steps.push('copy from ' + i.copy_from);
+                        (i.fixes || []).forEach(function (f) { steps.push(f); });
+                        return [esc(i.time), '<b>' + esc(i.title) + '</b>' + (i.kind !== 'imported' ? ' <span class="warn">(' + esc(i.kind) + ')</span>' : '') + (steps.length ? '<br><span class="muted">' + esc(steps.join(' · ')) + '</span>' : ''),
+                            esc(i.drive), esc(i.gb), copy];
+                    });
+                    var h = '<p class="nb-sum">' + esc(sum) + '</p>' + table(['Time', 'Title', 'Drive', '#GB', '#Copy'], rows);
+                    if (x.reroutes && x.reroutes.length) h += '<p>' + x.reroutes.map(function (r) { return '<span class="pill">' + esc(r.time) + ' ' + esc(r.text) + '</span>'; }).join('') + '</p>';
+                    if (x.waiting && x.waiting.length) h += '<p class="nb-sum" style="margin-top:.7em">Waiting now:</p>' + table(['File', '#GB', 'Why'], x.waiting.map(function (w) { return [esc(w.file), esc(w.gb), esc(w.note)]; }));
+                    return card('Imports', '', h, true);
+                }
+
+                function playbackCard(pb, jf) {
+                    pb = pb || [];
+                    var sessions = (jf && jf.sessions) || [];
+                    var covered = {};
+                    pb.forEach(function (p) { covered[p.title] = true; });
+                    var others = sessions.filter(function (s) { return !covered[s.title]; });
+                    var total = pb.reduce(function (a, p) { return a + (p.minutes || 0); }, 0);
+                    var stalls = pb.reduce(function (a, p) { return a + (p.stalls || 0); }, 0);
+                    var sum = pb.length ? pb.length + ' viewing' + (pb.length > 1 ? 's' : '') + ' · ' + mins(total) + ' · ' + (stalls ? '<span class="warn">' + stalls + ' stall' + (stalls > 1 ? 's' : '') + '</span>' : '<span class="good">no stalls</span>') : (others.length ? '' : 'Nothing played.');
+                    var rows = pb.map(function (p) {
+                        var net = (p.reconnects ? p.reconnects + ' reconnect' + (p.reconnects > 1 ? 's' : '') : '') + (p.mbps_low != null ? (p.reconnects ? ' · ' : '') + 'low ' + p.mbps_low + ' Mbps' : '');
+                        return [esc(p.start) + '–' + esc(p.end), '<b>' + esc(p.title) + '</b><br><span class="muted">' + esc(p.device) + ' · ' + esc(p.file) + '</span>',
+                            esc(p.playing), (p.start_s != null ? p.start_s + ' s' : ''), (p.stalls ? '<span class="bad">' + p.stalls + '</span>' : '0'),
+                            esc(net), (p.dropped ? '<span class="warn">' + p.dropped + '</span>' : '0'), (p.tv_ram_low_mb != null ? p.tv_ram_low_mb + ' MB' : '')];
+                    });
+                    var h = '<p class="nb-sum">' + sum + '</p>' + table(['Time', 'Title', '#Played', '#Start', '#Stalls', 'Network', '#Dropped', '#TV free RAM'], rows);
+                    if (others.length) h += '<p class="nb-sum" style="margin-top:.7em">Other players (no report):</p>' + table(['Time', 'Title', 'App', '#Stopped at'], others.map(function (s) { return [esc((s.start || '?') + '–' + (s.end || 'now')), esc(s.title), esc(s.client), s.position_min != null ? mins(s.position_min) : '']; }));
+                    return card('Playback', '', h, true);
+                }
+
+                function disksCard(d, partial) {
+                    d = d || [];
+                    if (!d.length) return card('Drives', '', '<p class="empty">' + (partial ? 'Not read.' : 'Only kept from the days the report ran.') + '</p>');
+                    var h = d.map(function (x) {
+                        if (!x.mounted) return '<div class="disk"><b class="bad">' + esc(x.name) + ': not mounted</b></div>';
+                        var cls = x.ssd ? '' : (x.room_gb < 25 ? 'bad' : (x.room_gb < 60 ? 'warn' : ''));
+                        var extra = x.ssd ? x.free_gb + ' GB free' : x.room_gb + ' GB above the reserve · ' + x.free_gb + ' GB free';
+                        if (x.days_left != null) extra += ' · about ' + x.days_left + ' days at ' + x.gb_per_day + ' GB a day';
+                        return '<div class="disk"><b>' + esc(x.name) + '</b> <span class="muted">' + esc(x.size_gb) + ' GB · ' + esc(x.used_pct) + '% full</span>' +
+                            '<div class="bar ' + cls + '"><i style="width:' + Math.min(100, x.used_pct) + '%"></i></div><span class="' + (cls === 'bad' ? 'bad' : cls === 'warn' ? 'warn' : 'muted') + '">' + esc(extra) + '</span></div>';
+                    }).join('');
+                    return card('Drives', 'when the report was read', h);
+                }
+
+                function subtitlesCard(s) {
+                    if (!s) return card('Subtitles', '', '<p class="empty">Not read.</p>');
+                    var dly = s.daily && s.daily.summary;
+                    var sum = s.found.length + ' found · ' + s.prepared.length + ' prepared before delivery · ' + s.tv_checks.length + ' TV check' + (s.tv_checks.length === 1 ? '' : 's') + ' · ' + s.missing.length + ' still missing';
+                    var h = '<p class="nb-sum">' + esc(sum) + '</p>';
+                    h += table(['Time', 'Title', 'How'], s.found.map(function (f) { return [esc(f.time), '<b>' + esc(f.title) + '</b>', esc(f.how)]; }));
+                    if (s.tv_checks.length) h += table(['Time', 'From the TV'], s.tv_checks.map(function (c) { return [esc(c.time), esc(c.text)]; }));
+                    if (dly) h += '<p class="muted">Daily run ' + esc(s.daily.time) + ': ' + esc(dly.searches) + ' searches, ' + esc(dly.downloads_used) + ' downloads used (' + esc(dly.downloads_left) + ' left), ' + esc(dly.minutes) + ' min.</p>';
+                    if (s.paused_for_playback) h += '<p class="muted">Paused ' + s.paused_for_playback + ' time' + (s.paused_for_playback > 1 ? 's' : '') + ' while something played.</p>';
+                    if (s.prepared.length) h += '<details><summary>Prepared before delivery</summary>' + table(['Time', 'Title', 'Result'], s.prepared.map(function (p) { return [esc(p.time), esc(p.title), esc(p.result)]; })) + '</details>';
+                    if (s.missing.length) h += '<details><summary>Still without an English subtitle (' + s.missing.length + ')</summary>' + table(['Title', 'Last tried'], s.missing.slice(0, 60).map(function (m) { return [esc(m.title), esc(m.since)]; })) + '</details>';
+                    if (s.failed.length) h += '<details><summary>Problems (' + s.failed.length + ')</summary>' + table(['Time', 'What'], s.failed.map(function (f) { return [esc(f.time), esc(f.text)]; })) + '</details>';
+                    return card('Subtitles', '', h);
+                }
+
+                function dailyCard(d) {
+                    if (!d || !d.ran) return card('Daily run', '07:35', '<p class="bad">Did not run.</p>');
+                    var sum = d.running ? 'Started ' + d.start + ', still running.' : (d.secs != null ? d.start + ' · took ' + secs(d.secs) : '<span class="bad">Started ' + esc(d.start) + ', did not finish</span>');
+                    var h = '<p class="nb-sum">' + sum + (d.runs > 1 ? ' · ' + d.runs + ' runs' : '') + '</p>';
+                    if (d.done) h += '<p class="muted">' + esc(d.done) + '</p>';
+                    if (d.problems && d.problems.length) h += '<details><summary>Retried or failed steps (' + d.problems.length + ')</summary><pre>' + esc(d.problems.join('\n')) + '</pre></details>';
+                    if (d.lines && d.lines.length) h += '<details><summary>Everything it did</summary><pre>' + esc(d.lines.join('\n')) + '</pre></details>';
+                    return card('Daily run', 'catalogue, ratings, box office', h);
+                }
+
+                function jobsCard(r) {
+                    var rows = [];
+                    var b = r.backup;
+                    if (b) rows.push(['Jellyfin backup', !b.ran ? '<span class="warn">did not run</span>' : b.ok ? '<span class="good">✓</span> ' + esc(b.time) + ' · ' + esc(b.mb) + ' MB' + (b.attempts > 1 ? ' · ' + b.attempts + ' tries' : '') : '<span class="bad">failed ' + esc(b.time) + '</span> <span class="muted">' + esc(b.error) + '</span>']);
+                    var th = (r.jellyfin && r.jellyfin.thumbnails) || [];
+                    rows.push(['Seek-bar thumbnails', th.length ? th.length + ' made: ' + th.map(function (t) { return esc(t.time + ' ' + t.title); }).join(', ') : '<span class="muted">none needed</span>']);
+                    var lp = r.library_patch || [];
+                    rows.push(['Facts after imports', lp.length ? lp.map(function (p) { return esc(p.time + ' ' + p.titles + ' (' + p.secs + ' s)'); }).join('<br>') : '<span class="muted">none</span>']);
+                    var ab = r.app_builds || [];
+                    rows.push(['App builds to HDD2', ab.length ? ab.map(function (a) { return esc(a.time + ' ' + a.text); }).join('<br>') : '<span class="muted">none</span>']);
+                    return card('Other jobs', '', table(['Job', 'What happened'], rows));
+                }
+
+                function jellyfinCard(j) {
+                    if (!j || !j.log) return card('Jellyfin', '', '<p class="empty">Its log for this day is gone.</p>');
+                    var n = (j.errors || []).reduce(function (a, e) { return a + e.count; }, 0);
+                    var sum = (j.tasks || []).length + ' scheduled task runs · ' + (n ? n + ' error line' + (n > 1 ? 's' : '') : 'no errors') + ' · ' + j.warnings + ' warnings (+' + j.noise + ' routine)';
+                    var h = '<p class="nb-sum">' + esc(sum) + '</p>';
+                    var failed = (j.tasks || []).filter(function (t) { return t.status !== 'Completed'; });
+                    if (failed.length) h += table(['Time', 'Task', 'Result'], failed.map(function (t) { return [esc(t.time), esc(t.name), '<span class="bad">' + esc(t.status) + '</span>']; }));
+                    if (n) h += '<details><summary>Errors</summary>' + table(['Time', 'From', 'What', '#×'], j.errors.map(function (e) { return [esc(e.time), esc(e.source), esc(e.text), esc(e.count)]; })) + '</details>';
+                    if ((j.tasks || []).length) h += '<details><summary>Scheduled tasks</summary>' + table(['Time', 'Task', '#Took'], j.tasks.map(function (t) { return [esc(t.time), esc(t.name) + (t.status !== 'Completed' ? ' <span class="bad">' + esc(t.status) + '</span>' : ''), secs(t.secs)]; })) + '</details>';
+                    return card('Jellyfin', '', h);
+                }
+
+                function traktCard(t) {
+                    if (!t) return card('Trakt', '', '<p class="empty">Not read.</p>');
+                    var h = '<p class="nb-sum">' + t.watchlist_syncs.length + ' watchlist change' + (t.watchlist_syncs.length === 1 ? '' : 's') + ' · ' + t.marked.length + ' marked watched from the TV' + (t.problems.length ? ' · <span class="warn">' + t.problems.length + ' problem(s)</span>' : '') + '</p>';
+                    if (t.history) h += '<p class="muted">History: ' + esc(t.history.text) + '</p>';
+                    if (t.library) h += '<p class="muted">Library on Trakt: ' + esc(t.library.text) + '</p>';
+                    var rows = t.watchlist_syncs.map(function (s) { return [esc(s.time), esc(s.text)]; }).concat(t.marked.map(function (m) { return [esc(m.time), 'marked ' + esc(m.what) + ' (' + esc(m.when) + ')' + (m.ok ? '' : ' <span class="bad">failed</span>')]; }));
+                    if (rows.length) h += '<details><summary>Changes</summary>' + table(['Time', 'What'], rows) + '</details>';
+                    if (t.problems.length) h += '<pre>' + esc(t.problems.join('\n')) + '</pre>';
+                    return card('Trakt', '', h);
+                }
+
+                function chart(days, key, label, fmt) {
+                    var max = Math.max.apply(null, days.map(function (d) { return d[key] || 0; }).concat([1]));
+                    var bars = days.map(function (d) { var v = d[key] || 0; return '<div class="' + (v ? '' : 'zero') + '" style="height:' + Math.max(1, Math.round(v * 100 / max)) + '%" title="' + esc(nice(d.day) + ': ' + (fmt ? fmt(v) : v)) + '" data-day="' + esc(d.day) + '"></div>'; }).join('');
+                    var step = Math.ceil(days.length / 10);
+                    var xs = days.map(function (d, i) { return '<span>' + (i % step === 0 ? esc(d.day.slice(8)) : '') + '</span>'; }).join('');
+                    var total = days.reduce(function (a, d) { return a + (d[key] || 0); }, 0);
+                    return card(label, 'total ' + (fmt ? fmt(total) : Math.round(total * 10) / 10), '<div class="chart">' + bars + '</div><div class="chart-x">' + xs + '</div>');
+                }
+
+                function renderRange(idx, n) {
+                    var from = shift(todayIso(), -(n - 1));
+                    var days = (idx.days || []).filter(function (d) { return d.day >= from; });
+                    page.querySelector('#nbBuilt').textContent = 'read ' + (idx.built || '').slice(11);
+                    if (!days.length) { body.innerHTML = '<p class="empty">No reports in this period yet.</p>'; return; }
+                    var counts = { ok: 0, look: 0, fail: 0 };
+                    days.forEach(function (d) { counts[d.verdict] = (counts[d.verdict] || 0) + 1; });
+                    var h = '<div class="nb-verdict ' + (counts.fail ? 'fail' : counts.look ? 'look' : 'ok') + '"><b>' + days.length + ' days</b>: ' +
+                        '<span class="dot ok"></span>' + counts.ok + ' all good &nbsp; <span class="dot look"></span>' + counts.look + ' needed a look &nbsp; <span class="dot fail"></span>' + counts.fail + ' with a failure</div>';
+                    h += '<div class="nb-grid">' + chart(days, 'gb', 'Imported (GB)') + chart(days, 'watched_min', 'Watched', mins) + chart(days, 'stalls', 'Playback stalls') + chart(days, 'errors', 'Jellyfin error lines');
+                    var drives = {};
+                    days.forEach(function (d) { Object.keys(d.room || {}).forEach(function (k) { drives[k] = true; }); });
+                    var dn = Object.keys(drives).sort();
+                    var rows = days.slice().reverse().map(function (d) {
+                        return '<tr class="click" data-day="' + esc(d.day) + '"><td><span class="dot ' + esc(d.verdict) + '"></span>' + esc(nice(d.day)) + (d.partial ? ' <span class="muted">(so far)</span>' : '') + '</td>' +
+                            '<td class="n">' + (d.checks || '') + '</td><td class="n">' + d.imports + '</td><td class="n">' + d.gb + '</td><td class="n">' + d.viewings + '</td><td class="n">' + mins(d.watched_min) + '</td>' +
+                            '<td class="n">' + (d.stalls ? '<span class="warn">' + d.stalls + '</span>' : '0') + '</td><td class="n">' + d.subtitles + '</td><td class="n">' + d.errors + '</td>' +
+                            '<td class="n">' + (d.daily_secs != null ? secs(d.daily_secs) : '<span class="bad">—</span>') + '</td>' +
+                            dn.map(function (k) { var v = (d.room || {})[k]; return '<td class="n">' + (v == null ? '' : Math.round(v)) + '</td>'; }).join('') + '</tr>';
+                    }).join('');
+                    h += '<div class="nb-card wide"><h3>Day by day <small>click a day to open it · drives: GB above the reserve</small></h3><div class="scroll"><table><tr><th>Day</th><th class="n">Checks</th><th class="n">Imports</th><th class="n">GB</th><th class="n">Viewings</th><th class="n">Watched</th><th class="n">Stalls</th><th class="n">Subtitles</th><th class="n">Errors</th><th class="n">Daily run</th>' +
+                        dn.map(function (k) { return '<th class="n">' + esc(k.split('-')[0]) + '</th>'; }).join('') + '</tr>' + rows + '</table></div></div></div>';
+                    body.innerHTML = h;
+                }
+
+                body.addEventListener('click', function (e) {
+                    var el = e.target.closest('[data-day]');
+                    if (el) showDay(el.getAttribute('data-day'));
+                });
+                page.querySelector('.nb-head').addEventListener('click', function (e) {
+                    var b = e.target.closest('[data-nb]');
+                    if (!b || b.disabled) return;
+                    var a = b.getAttribute('data-nb');
+                    if (a === 'prev') showDay(shift(state.day, -1));
+                    else if (a === 'next') showDay(shift(state.day, 1));
+                    else if (a === 'today') showDay(todayIso());
+                    else if (a === 'yesterday') showDay(shift(todayIso(), -1));
+                    else if (a === '7' || a === '30') showRange(+a);
+                    else if (a === 'refresh') { if (state.range) showRange(state.range); else showDay(state.day, true); }
+                });
+
+                var started = false;
+                function start() { if (started) return; started = true; showDay(todayIso()); }
+                page.addEventListener('pageshow', start);
+                if (page.offsetParent !== null || document.readyState === 'complete') { setTimeout(start, 0); }
+            })();
+        </script>
+    </div>
+</body>
+</html>
