@@ -30,11 +30,16 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
     /// </summary>
     public partial class ImdbRatingsController
     {
+        private static readonly object SlimLock = new object();
+        private static int _watchlistSyncRunning;
+
         /// <summary>
         /// Gets one of the streaming lists ("library" or "catalog") that the media server writes into
         /// this plugin's data folder once a day.
         /// </summary>
         /// <param name="name">Which list: library or catalog.</param>
+        /// <param name="service">Catalog only: one page's rows ("netflix", "prime", "cinema", "list"), without the
+        /// titles' journeys (a title's own card has them): a fraction of the whole file, which the TV reads at once.</param>
         /// <response code="200">The list as JSON.</response>
         /// <response code="404">The list has not been written yet.</response>
         /// <returns>The JSON file.</returns>
@@ -42,7 +47,7 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
         [Authorize]
         [ProducesResponseType(StatusCodes.Status200OK)]
         [ProducesResponseType(StatusCodes.Status404NotFound)]
-        public ActionResult GetStreamingList([FromRoute] string name)
+        public ActionResult GetStreamingList([FromRoute] string name, [FromQuery] string? service = null)
         {
             if (!string.Equals(name, "library", StringComparison.Ordinal) && !string.Equals(name, "catalog", StringComparison.Ordinal))
             {
@@ -61,7 +66,99 @@ namespace Jellyfin.Plugin.ImdbRatingsNg.Api
                 return NotFound();
             }
 
+            if (string.Equals(name, "catalog", StringComparison.Ordinal) && !string.IsNullOrEmpty(service))
+            {
+                if (!Regex.IsMatch(service, "^[a-z]{2,12}$"))
+                {
+                    return NotFound();
+                }
+
+                var slim = SlimCatalog(folder, path, service);
+                return slim == null ? NotFound() : PhysicalFile(slim, MediaTypeNames.Application.Json);
+            }
+
             return PhysicalFile(path, MediaTypeNames.Application.Json);
+        }
+
+        /// <summary>
+        /// One service's rows from the daily catalogue, without journeys, kept as streaming-catalog-{service}.json and
+        /// made again whenever the daily catalogue is newer.
+        /// </summary>
+        private static string? SlimCatalog(string folder, string source, string service)
+        {
+            var slim = Path.Combine(folder, "streaming-catalog-" + service + ".json");
+            lock (SlimLock)
+            {
+                if (System.IO.File.Exists(slim) && System.IO.File.GetLastWriteTimeUtc(slim) >= System.IO.File.GetLastWriteTimeUtc(source))
+                {
+                    return slim;
+                }
+
+                try
+                {
+                    var all = JsonNode.Parse(System.IO.File.ReadAllText(source)) as JsonObject;
+                    var rows = (all?["services"] as JsonObject)?[service]?.DeepClone() as JsonObject;
+                    if (rows == null)
+                    {
+                        return null;
+                    }
+
+                    foreach (var row in rows["rows"] as JsonArray ?? new JsonArray())
+                    {
+                        foreach (var item in (row?["items"] as JsonArray) ?? new JsonArray())
+                        {
+                            (item as JsonObject)?.Remove("journey");
+                        }
+                    }
+
+                    var outDoc = new JsonObject
+                    {
+                        ["logos"] = all?["logos"]?.DeepClone(),
+                        ["services"] = new JsonObject { [service] = rows },
+                    };
+                    var tmp = slim + ".tmp";
+                    System.IO.File.WriteAllText(tmp, outDoc.ToJsonString());
+                    System.IO.File.Move(tmp, slim, true);
+                    return slim;
+                }
+                catch (IOException)
+                {
+                    return null;
+                }
+                catch (JsonException)
+                {
+                    return null;
+                }
+            }
+        }
+
+        /// <summary>
+        /// The TV changed its Watchlist: Trakt is told now instead of at the Mac's next two-minute check.
+        /// </summary>
+        /// <response code="202">The sync was started (or one is already running).</response>
+        /// <returns>Nothing.</returns>
+        [HttpPost("Watchlist/Changed")]
+        [Authorize]
+        [ProducesResponseType(StatusCodes.Status202Accepted)]
+        public ActionResult WatchlistChanged()
+        {
+            if (Interlocked.CompareExchange(ref _watchlistSyncRunning, 1, 0) == 0)
+            {
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await Task.Delay(1500).ConfigureAwait(false); // the TV's save lands first
+                        await RunM2Script(new[] { "maintenance/trakt_sync.py" }, TimeSpan.FromSeconds(120), "Trakt sync").ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        Interlocked.Exchange(ref _watchlistSyncRunning, 0);
+                    }
+                });
+            }
+
+            return Accepted();
         }
 
         /// <summary>
