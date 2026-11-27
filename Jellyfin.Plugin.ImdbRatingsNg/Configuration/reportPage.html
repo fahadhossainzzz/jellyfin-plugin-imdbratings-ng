@@ -130,9 +130,28 @@
                     if (notes.length) h += '<details><summary>' + notes.length + ' note' + (notes.length > 1 ? 's' : '') + ' (nothing to do)</summary><ul class="nb-checks">' + notes.map(function (c) { return '<li><span class="dot"></span><b>' + esc(c.area) + ':</b> ' + esc(c.text) + '</li>'; }).join('') + '</ul></details>';
                     if (r.collector_errors && r.collector_errors.length) h += '<details><summary>Report problems</summary><pre>' + esc(r.collector_errors.join('\n')) + '</pre></details>';
                     h += '</div><div class="nb-grid">';
-                    h += downloadsCard(r.downloads) + importsCard(r.imports) + playbackCard(r.playback, r.jellyfin) + disksCard(r.disks, r.partial) + subtitlesCard(r.subtitles) +
+                    h += downloadsCard(r.downloads) + networkCard(r.network) + importsCard(r.imports) + playbackCard(r.playback, r.jellyfin) + disksCard(r.disks, r.partial) + subtitlesCard(r.subtitles) +
                         dailyCard(r.daily_run) + jobsCard(r) + jellyfinCard(r.jellyfin) + traktCard(r.trakt);
                     body.innerHTML = h + '</div>';
+                }
+
+                // The Mac's own traffic: internet over IPv4 (shared ISP address) and IPv6 (direct), and inside the home
+                function networkCard(n) {
+                    if (!n) return '';
+                    var tot = function (x) { return Math.round(((x.in_gb || 0) + (x.out_gb || 0)) * 100) / 100; };
+                    var v4 = n.v4 || {}, v6 = n.v6 || {}, home = n.home || {};
+                    var inet = tot(v4) + tot(v6);
+                    var share = inet > 0 ? Math.round(tot(v6) * 100 / inet) : 0;
+                    var sum = 'Internet ' + (Math.round(inet * 100) / 100) + ' GB · <b>IPv6 ' + share + '%</b> · home network ' + tot(home) + ' GB';
+                    var rows = [];
+                    [['IPv6', v6], ['IPv4', v4], ['Home', home]].forEach(function (x) {
+                        (x[1].apps || []).forEach(function (a) { rows.push([x[0], esc(a.app), a.in_gb, a.out_gb]); });
+                    });
+                    var h = '<p class="nb-sum">' + sum + '</p>' +
+                        table(['', '', '#Down GB', '#Up GB'], [['<b>IPv6</b>', 'all', v6.in_gb || 0, v6.out_gb || 0], ['<b>IPv4</b>', 'all', v4.in_gb || 0, v4.out_gb || 0], ['<b>Home</b>', 'all', home.in_gb || 0, home.out_gb || 0]]) +
+                        (rows.length ? '<details><summary>By app</summary>' + table(['Via', 'App', '#Down GB', '#Up GB'], rows) + '</details>' : '') +
+                        '<p class="muted">The Mac\'s own traffic (downloads, Jellyfin, browsers on the Mac). The TVs\' and phones\' own internet use is not included.' + (n.updated ? ' Updated ' + esc(n.updated) + '.' : '') + '</p>';
+                    return card('Internet', 'Mac', h);
                 }
 
                 function downloadsCard(d) {
@@ -298,7 +317,7 @@
                     days.forEach(function (d) { counts[d.verdict] = (counts[d.verdict] || 0) + 1; });
                     var h = '<div class="nb-verdict ' + (counts.fail ? 'fail' : counts.look ? 'look' : 'ok') + '"><b>' + days.length + ' days</b>: ' +
                         '<span class="dot ok"></span>' + counts.ok + ' all good &nbsp; <span class="dot look"></span>' + counts.look + ' needed a look &nbsp; <span class="dot fail"></span>' + counts.fail + ' with a failure</div>';
-                    h += '<div class="nb-grid">' + chart(days, 'gb', 'Imported (GB)') + chart(days, 'watched_min', 'Watched', mins) + chart(days, 'stalls', 'Playback stalls') + chart(days, 'errors', 'Jellyfin error lines') + chart(days, 'torrent_mb_s', 'Torrent speed (MB/s)', null, true) + chart(days, 'link_mb_s', 'Direct-link speed (MB/s)', null, true);
+                    h += '<div class="nb-grid">' + chart(days, 'gb', 'Imported (GB)') + chart(days, 'watched_min', 'Watched', mins) + chart(days, 'stalls', 'Playback stalls') + chart(days, 'errors', 'Jellyfin error lines') + chart(days, 'torrent_mb_s', 'Torrent speed (MB/s)', null, true) + chart(days, 'link_mb_s', 'Direct-link speed (MB/s)', null, true) + chart(days, 'net_v6_gb', 'Internet over IPv6 (GB)') + chart(days, 'net_v4_gb', 'Internet over IPv4 (GB)');
                     var drives = {};
                     days.forEach(function (d) { Object.keys(d.room || {}).forEach(function (k) { drives[k] = true; }); });
                     var dn = Object.keys(drives).sort();
